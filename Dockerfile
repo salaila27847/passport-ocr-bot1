@@ -23,7 +23,7 @@ WORKDIR /app
 
 # 4. ติดตั้ง Python Packages ผ่าน pip
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir --break-system-packages --no-build-isolation -r requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 # 5. คัดลอกโค้ดแอปพลิเคชันทั้งหมด
 COPY . .
