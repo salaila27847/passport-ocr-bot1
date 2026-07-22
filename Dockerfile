@@ -1,11 +1,16 @@
 # 1. ใช้ Python Base Image
 FROM python:3.10-slim
 
-# 2. ติดตั้ง Tesseract OCR และ dependencies สำหรับระบบ Linux
-RUN apt-get update && apt-get install -y \
+# ตั้งค่า Environment ไม่ให้ apt-get ถามโต้ตอบระหว่างติดตั้ง
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 2. อัปเดตและติดตั้ง Tesseract OCR พร้อม dependencies
+RUN apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends \
     tesseract-ocr \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # 3. กำหนด Working Directory
