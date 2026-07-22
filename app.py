@@ -10,9 +10,11 @@ def health_check():
     """Endpoint สำหรับตรวจสอบสถานะของ Server"""
     return jsonify({
         "status": "online",
-        "message": "PassportEye OCR Service on Koyeb is ready!"
+        "message": "PassportEye OCR Service is ready!"
     }), 200
 
+# ✅ เพิ่มให้รองรับทั้ง /ocr และ /ocr/passport
+@app.route('/ocr', methods=['POST'])
 @app.route('/ocr/passport', methods=['POST'])
 def process_passport():
     """Endpoint รับรูปภาพพาสปอร์ตผ่าน Multipart Form-Data เพื่ออ่าน MRZ"""
