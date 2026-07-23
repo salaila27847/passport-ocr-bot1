@@ -16,4 +16,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "app:app"]
+# --timeout 120: เผื่อเวลาให้ Tesseract/PassportEye ประมวลผลรูปภาพขนาดใหญ่หรือคุณภาพต่ำได้
+# โดยไม่ให้ gunicorn kill worker ก่อนเวลา (ค่า default คือ 30 วินาที ซึ่งน้อยเกินไปสำหรับงาน OCR)
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--timeout", "120", "app:app"]

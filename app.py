@@ -10,7 +10,29 @@ app = Flask(__name__)
 # ค่า valid_score ต่ำสุดที่ยอมรับว่า "อ่านได้ดีพอ" โดยไม่ต้องลองซ้ำด้วยภาพที่ปรับปรุงแล้ว
 MIN_ACCEPTABLE_SCORE = 70
 
+# ขนาดภาพสูงสุด (พิกเซล ด้านที่ยาวกว่า) ก่อนส่งเข้า Tesseract
+# รูปถ่ายจากมือถือมักมีความละเอียดสูงเกินความจำเป็นสำหรับอ่านแถบ MRZ
+# การย่อขนาดก่อนช่วยลดเวลาประมวลผลได้มาก โดยไม่กระทบความแม่นยำ
+MAX_DIMENSION = 1800
+
 VOWELS = set("AEIOUY")
+
+
+def downscale_if_needed(src_path: str, dest_path: str) -> str:
+    """ย่อภาพลงถ้าใหญ่เกิน MAX_DIMENSION เพื่อลดเวลาประมวลผลของ Tesseract
+    คืนค่า path ของไฟล์ที่จะใช้จริง (ไฟล์เดิมถ้าไม่ต้องย่อ หรือไฟล์ใหม่ถ้าย่อแล้ว)"""
+    img = Image.open(src_path)
+    width, height = img.size
+    longest_side = max(width, height)
+
+    if longest_side <= MAX_DIMENSION:
+        return src_path
+
+    scale = MAX_DIMENSION / longest_side
+    new_size = (int(width * scale), int(height * scale))
+    img = img.resize(new_size, Image.Resampling.LANCZOS)
+    img.save(dest_path, quality=90)
+    return dest_path
 
 
 def is_noise_token(word: str) -> bool:
@@ -47,7 +69,13 @@ def clean_name_field(raw: str) -> str:
 def enhance_image(src_path: str, dest_path: str) -> None:
     img = Image.open(src_path)
     width, height = img.size
-    img = img.resize((width * 2, height * 2), Image.Resampling.LANCZOS)
+    longest_side = max(width, height)
+
+    # upscale เฉพาะภาพที่เล็กเกินไป (เช่นจากรูปที่ถูกย่อไปแล้วหรือถ่ายมาความละเอียดต่ำ)
+    # ถ้าภาพใหญ่พอแล้ว ไม่ต้อง upscale ซ้ำ เพื่อไม่ให้ประมวลผลหนักเกินไปจนเกิด timeout
+    if longest_side < 1000:
+        img = img.resize((width * 2, height * 2), Image.Resampling.LANCZOS)
+
     img = ImageEnhance.Contrast(img).enhance(2.0)
     img = ImageEnhance.Sharpness(img).enhance(2.0)
     img.save(dest_path, quality=95)
@@ -72,6 +100,7 @@ def process_passport():
         return jsonify({"success": False, "error": "No selected file"}), 400
 
     temp_path = None
+    downscaled_path = None
     enhanced_path = None
 
     try:
@@ -79,8 +108,17 @@ def process_passport():
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
             file.save(temp_path := temp_file.name)
 
+        # 1.1 ย่อขนาดภาพก่อน ถ้าใหญ่เกินไป (ลดเวลาประมวลผล ป้องกัน worker timeout)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as ds_file:
+            ds_candidate = ds_file.name
+        ocr_input_path = downscale_if_needed(temp_path, ds_candidate)
+        if ocr_input_path == ds_candidate:
+            downscaled_path = ds_candidate
+        else:
+            os.remove(ds_candidate)  # ไม่ได้ใช้ ลบทิ้ง
+
         # 2. First OCR attempt
-        mrz = read_mrz(temp_path)
+        mrz = read_mrz(ocr_input_path)
         best_score = getattr(mrz, "valid_score", 0) if mrz is not None else -1
 
         # 3. ลองอ่านซ้ำด้วยภาพที่ปรับปรุงแล้ว ถ้าอ่านไม่ได้เลย หรืออ่านได้แต่ score ต่ำกว่าเกณฑ์
@@ -88,7 +126,7 @@ def process_passport():
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as enh_file:
                     enhanced_path = enh_file.name
-                enhance_image(temp_path, enhanced_path)
+                enhance_image(ocr_input_path, enhanced_path)
 
                 mrz_enhanced = read_mrz(enhanced_path)
                 enhanced_score = getattr(mrz_enhanced, "valid_score", 0) if mrz_enhanced is not None else -1
@@ -145,6 +183,9 @@ def process_passport():
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
+
+        if downscaled_path and os.path.exists(downscaled_path):
+            os.remove(downscaled_path)
 
         if enhanced_path and os.path.exists(enhanced_path):
             os.remove(enhanced_path)
