@@ -252,9 +252,17 @@ def health_check():
         "message": "PassportEye OCR Service is ready!"
     }), 200
 
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        "status": "ok",
+        "service": "passport-ocr-bot",
+        "version": "1.0",
+        "message": "Service is healthy"
+    }), 200
+
 
 @app.route('/ocr', methods=['POST'])
-@app.route('/ocr/passport', methods=['POST'])
 def process_passport():
     if 'image' not in request.files:
         return jsonify({"success": False, "error": "No image file provided"}), 400
