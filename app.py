@@ -2,6 +2,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import requests
 from flask import Flask, request, jsonify
 from passporteye import read_mrz
@@ -9,7 +10,7 @@ from PIL import Image, ImageEnhance, ImageFilter
 
 app = Flask(__name__)
 
-MIN_ACCEPTABLE_SCORE = 70
+MIN_ACCEPTABLE_SCORE = int(os.environ.get("MIN_ACCEPTABLE_SCORE", "70"))
 MAX_DIMENSION = 1800
 VOWELS = set("AEIOUY")
 
@@ -192,14 +193,30 @@ def process_ocr_job_background(temp_path: str, ocr_input_path: str, seq: str, sh
             print("APPS_SCRIPT_WEBHOOK_URL not configured; skipping callback")
             return
 
-        try:
-            requests.post(
-                f"{APPS_SCRIPT_WEBHOOK_URL}?token={APPS_SCRIPT_TOKEN}",
-                json=callback_payload,
-                timeout=20
-            )
-        except Exception as cb_err:
-            print(f"Callback POST to Apps Script failed: {cb_err}")
+        # ข้อ 4.4: retry + backoff ถ้ายิง callback กลับ Apps Script ไม่สำเร็จ (4 ครั้ง รวมพักเวลา ~14 วิ)
+        # ถ้าครบ 4 ครั้งแล้วยังพัง: log ไว้ใน Render log (backup plan อย่างง่ายที่สุด รอการตัดสินใจเพิ่มเติมในอนาคต)
+        backoff_seconds = [2, 4, 8]
+        max_attempts = 4
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = requests.post(
+                    f"{APPS_SCRIPT_WEBHOOK_URL}?token={APPS_SCRIPT_TOKEN}",
+                    json=callback_payload,
+                    timeout=20
+                )
+                if resp.status_code == 200:
+                    break
+                print(f"Callback POST attempt {attempt}/{max_attempts} got HTTP {resp.status_code}: {resp.text}")
+            except Exception as cb_err:
+                print(f"Callback POST attempt {attempt}/{max_attempts} failed: {cb_err}")
+
+            if attempt < max_attempts:
+                time.sleep(backoff_seconds[attempt - 1])
+            else:
+                print(
+                    f"CALLBACK PERMANENTLY FAILED after {max_attempts} attempts. "
+                    f"seq={seq} sheetId={sheet_id} payload={callback_payload}"
+                )
 
     finally:
         for p in {temp_path, ocr_input_path}:
