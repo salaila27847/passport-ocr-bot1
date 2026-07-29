@@ -6,6 +6,7 @@ const MAIN_FOLDER_NAME = "interview";
 const RENDER_OCR_URL = "https://passport-ocr-bot1.onrender.com/ocr";
 const RENDER_OCR_SUBMIT_URL = "https://passport-ocr-bot1.onrender.com/ocr/submit";
 const SECRET_TOKEN = "hkt12345604";
+const IMAGE_BATCH_DEBOUNCE_MS = 5000; // ข้อ 4: หน่วงเวลารวมรูปก่อนตอบกลับครั้งเดียว กันตอบถี่ๆ ทีละรูป (นับจากรูปล่าสุดที่เข้ามาแต่ละรอบ)
 
 // ==========================================
 // DEBUG LOGGING (เขียนลง Google Sheet ชื่อ "BOT_DEBUG_LOG" ให้เปิดดูง่ายๆ โดยไม่ต้องเข้า Apps Script Executions)
@@ -61,6 +62,51 @@ function withLock(fn) {
 }
 
 // ==========================================
+// BOOKED SEQ TRACKING (ต่อ userName — ใช้โชว์รายการ SEQ ที่จองไว้แต่ยังไม่จบงาน)
+// ==========================================
+// เก็บแยกจากคอลัมน์ E ของ SUMMARY เพราะคอลัมน์ E ถูก importOcrResult() เขียนทับด้วยเลข Passport
+// หลัง OCR สำเร็จ ทำให้ข้อความ "จองโดย {userName}" หายไปก่อนงานจะจบจริง (ก่อนกด "จบงาน")
+function bookedSeqPropertyKey(sheetId, userName) {
+  return `BOOKED_${sheetId}_${userName}`;
+}
+
+function getUserBookedSeqs(sheetId, userName) {
+  const raw = PropertiesService.getScriptProperties().getProperty(bookedSeqPropertyKey(sheetId, userName));
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    return [];
+  }
+}
+
+function addBookedSeqs(sheetId, userName, seqs) {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const current = getUserBookedSeqs(sheetId, userName);
+  const merged = current.concat(seqs.filter(s => !current.includes(s)));
+  scriptProperties.setProperty(bookedSeqPropertyKey(sheetId, userName), JSON.stringify(merged));
+}
+
+function removeBookedSeq(sheetId, userName, seq) {
+  if (!sheetId || !userName || !seq) return;
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const remaining = getUserBookedSeqs(sheetId, userName).filter(s => String(s) !== String(seq));
+  const key = bookedSeqPropertyKey(sheetId, userName);
+  if (remaining.length === 0) {
+    scriptProperties.deleteProperty(key);
+  } else {
+    scriptProperties.setProperty(key, JSON.stringify(remaining));
+  }
+}
+
+// ข้อความรายการ SEQ ที่ผู้ใช้คนนี้จองไว้แต่ยังไม่จบงาน (คืนสตริงว่างถ้าไม่มี ไม่ต้องแสดงหัวข้อเปล่าๆ)
+function formatBookedSeqListText(sheetId, userName) {
+  const bookedSeqs = getUserBookedSeqs(sheetId, userName);
+  if (bookedSeqs.length === 0) return '';
+  return `📋 SEQ ที่คุณจองไว้ (ยังไม่จบงาน): ${bookedSeqs.join(', ')}\n\n`;
+}
+
+// ==========================================
 // MAIN WEBHOOK (doPost)
 // ==========================================
 function doPost(e) {
@@ -83,6 +129,18 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
+    // คำขอจากหน้า popup ที่เปิดใน in-app browser ของ LINE (ข้อ 5 และ 6) — sheetId/seq/uid/sheetName อยู่ใน
+    // query string เดียวกับ URL ของหน้า popup (e.parameter) ส่วนข้อมูลที่กรอกจริงอยู่ใน JSON body
+    if (body.action === 'save_photo_classification') {
+      return handleSavePhotoClassification(e, body);
+    }
+    if (body.action === 'defer_photo_classification') {
+      return handleDeferPhotoClassification(e);
+    }
+    if (body.action === 'save_summary_extra') {
+      return handleSaveSummaryExtra(e, body);
+    }
+
     const events = body.events || [];
     for (const event of events) {
       try {
@@ -103,6 +161,72 @@ function doPost(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 }
+
+// ==========================================
+// POPUP WEB APP (doGet) — ข้อ 5 (จัดการรูปภาพ) และข้อ 6 (ข้อมูลเพิ่มเติม SUMMARY)
+// ==========================================
+// แทนที่จะใช้ LIFF (ต้องแยก LINE Login channel ต่างหาก ผูกกับ Messaging API channel ไม่ได้แล้ว)
+// ใช้วิธีเปิดลิงก์ URL ธรรมดา (action type "uri") ให้ LINE เปิดใน in-app browser ของมันเอง
+// หน้าเว็บ (doGet) กับ API ที่หน้าเว็บเรียกกลับมา (doPost) เป็น URL เดียวกัน จึงเป็น same-origin ไม่มีปัญหา CORS
+function doGet(e) {
+  const page = e.parameter && e.parameter.page;
+  if (!e.parameter || e.parameter.token !== SECRET_TOKEN) {
+    return HtmlService.createHtmlOutput('<p>Unauthorized</p>');
+  }
+  if (page === 'manage_photos') {
+    return renderManagePhotosPage(e);
+  }
+  if (page === 'extra_info') {
+    return renderExtraInfoPage(e);
+  }
+  return HtmlService.createHtmlOutput('<p>Not found</p>');
+}
+
+function jsonResponse(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function getWebAppUrl() {
+  return ScriptApp.getService().getUrl();
+}
+
+// สร้าง URL ของหน้า popup พร้อม token กันเข้าถึงโดยไม่ได้รับอนุญาต — sheetId/seq/uid อยู่ใน query string
+// เพื่อให้หน้าเว็บ POST กลับมาที่ location.href ตรงๆ ได้เลยโดยไม่ต้องแนบซ้ำ (doPost เช็ค token จาก e.parameter อยู่แล้ว)
+function buildPopupUrl(page, params) {
+  const query = Object.keys(params)
+    .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(params[key] || '')}`)
+    .join('&');
+  return `${getWebAppUrl()}?page=${encodeURIComponent(page)}&token=${encodeURIComponent(SECRET_TOKEN)}&${query}`;
+}
+
+function escapeHtml(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// CSS ร่วมของหน้า popup ทั้งสองแบบ (ข้อ 5/6) — ดีไซน์เรียบทันสมัย รองรับจอมือถือเป็นหลัก
+const POPUP_SHARED_STYLE = `
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f5f7; color: #1a1a1a; padding-bottom: 96px; }
+  header { position: sticky; top: 0; background: #06c755; color: #fff; padding: 14px 16px; font-weight: 700; font-size: 16px; box-shadow: 0 2px 6px rgba(0,0,0,.08); z-index: 10; }
+  header small { display: block; font-weight: 400; font-size: 12px; opacity: .9; margin-top: 2px; }
+  .container { padding: 12px; max-width: 640px; margin: 0 auto; }
+  .card { background: #fff; border-radius: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 12px; overflow: hidden; }
+  .footer-bar { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; padding: 10px 12px; box-shadow: 0 -2px 8px rgba(0,0,0,.1); display: flex; gap: 10px; max-width: 640px; margin: 0 auto; }
+  button { border: none; border-radius: 10px; padding: 13px 16px; font-size: 15px; font-weight: 700; flex: 1; cursor: pointer; }
+  .btn-primary { background: #06c755; color: #fff; }
+  .btn-primary:disabled { background: #b7e6c8; color: #fff; cursor: not-allowed; }
+  .btn-secondary { background: #eee; color: #444; }
+  .hint { text-align: center; font-size: 12px; color: #888; padding: 8px 12px 0; }
+  .warn { display: none; background: #fff3cd; color: #7a5b00; padding: 10px 12px; border-radius: 10px; font-size: 13px; margin: 0 12px 10px; }
+  .done-screen { text-align: center; padding: 60px 20px; }
+  .done-screen .icon { font-size: 48px; }
+  .done-screen p { font-size: 15px; color: #444; line-height: 1.6; }
+`;
 
 // ==========================================
 // EVENT HANDLER
@@ -152,7 +276,30 @@ function handleEvent(event) {
     const queue = getPendingQueue(userId, seq);
     queue.push({ fileId: uploaded.fileId, imageUrl: uploaded.imageUrl });
     savePendingQueue(userId, seq, queue);
-    replyBatchAck(event.replyToken, seq, queue.length);
+
+    // ข้อ 4: LINE ส่งรูปแต่ละใบเป็นคนละ webhook call แยกกัน (แม้ผู้ใช้เลือกส่งพร้อมกันจากคลังภาพ)
+    // จึงต้อง debounce ข้าม execution ด้วย CacheService: ทุกรูปที่เข้ามาจะแย่งจอง "ตั๋วล่าสุด" ของ burst นี้
+    // แล้ว sleep รอสักครู่ — execution ที่ตั๋วยังไม่ถูกแย่งหลัง sleep เท่านั้นที่จะเป็นคนตอบกลับรวบยอด
+    const cache = CacheService.getScriptCache();
+    const burstKey = `imgBurst_${userId}_${seq}`;
+    const burstCountKey = `imgBurstCount_${userId}_${seq}`;
+    const myTicket = `${event.replyToken}|${Date.now()}|${Math.random()}`;
+    cache.put(burstKey, myTicket, 30);
+    const burstCountSoFar = (parseInt(cache.get(burstCountKey), 10) || 0) + 1;
+    cache.put(burstCountKey, String(burstCountSoFar), 30);
+
+    Utilities.sleep(IMAGE_BATCH_DEBOUNCE_MS);
+
+    if (cache.get(burstKey) !== myTicket) {
+      // มีรูปใหม่เข้ามาระหว่างรอ ปล่อยให้ execution ของรูปล่าสุดใน burst เป็นคนตอบกลับแทน ไม่ต้องทำอะไรต่อ
+      return;
+    }
+
+    const finalQueue = getPendingQueue(userId, seq);
+    const finalBurstCount = parseInt(cache.get(burstCountKey), 10) || 1;
+    cache.remove(burstKey);
+    cache.remove(burstCountKey);
+    replyBatchAck(event.replyToken, seq, finalBurstCount, finalQueue.length);
     return;
   }
 
@@ -166,20 +313,16 @@ function handleEvent(event) {
       userProperties.setProperty(userId + '_sheetName', data.sheetName);
       userProperties.deleteProperty(userId + '_seq');
       userProperties.setProperty(userId + '_awaitingSeq', 'true');
+      const userNameForList = getLineUserProfile(userId);
+      const bookedListText = formatBookedSeqListText(data.sheetId, userNameForList);
       replySeqPromptWithBookingOption(
         event.replyToken,
-        `📊 คุณเลือกแผ่นงาน: "${data.sheetName}"\n\nกรุณาพิมพ์หมายเลข SEQ ที่ต้องการจัดการ หรือกดปุ่ม "จอง SEQ" ด้านล่าง:`
+        `📊 คุณเลือกแผ่นงาน: "${data.sheetName}"\n\n${bookedListText}กรุณาพิมพ์หมายเลข SEQ ที่ต้องการจัดการ หรือกดปุ่ม "จอง SEQ" ด้านล่าง:`
       );
       return;
     }
 
-    // ระบุประเภทภาพถ่าย
-    if (data.action === 'classify_image') {
-      handleImageClassification(event, userId, data.fileId, data.type);
-      return;
-    }
-
-    // เริ่ม/ทำต่อ การจัดการรูปในคิว pending ทีละใบ
+    // เริ่ม/ทำต่อ การจัดการรูปในคิว pending ทั้งหมด (เปิดหน้า popup — ข้อ 5)
     if (data.action === 'manage_photos') {
       handleManagePhotos(event, userId);
       return;
@@ -205,8 +348,11 @@ function handleEvent(event) {
 
     // Quick Reply Menu Actions หลังจบงาน
     if (data.action === 'menu_select_seq') {
+      const sheetIdForSelect = userProperties.getProperty(userId + '_sheetId');
       userProperties.setProperty(userId + '_awaitingSeq', 'true');
-      replyText(event.replyToken, "📸 กรุณากรอกเลข SEQ สำหรับเคสถัดไป (เช่น 02 หรือ 105):");
+      const userNameForList = getLineUserProfile(userId);
+      const bookedListText = formatBookedSeqListText(sheetIdForSelect, userNameForList);
+      replyText(event.replyToken, `${bookedListText}📸 กรุณากรอกเลข SEQ สำหรับเคสถัดไป (เช่น 02 หรือ 105):`);
       return;
     }
 
@@ -220,6 +366,46 @@ function handleEvent(event) {
     if (data.action === 'menu_end') {
       clearAllUserProperties(userProperties, userId);
       replyText(event.replyToken, "🏁 ปิดการทำงานเรียบร้อยแล้ว หากต้องการเริ่มใหม่ สามารถกดเลือกเมนูหรือพิมพ์ EXIT ได้เลยครับ");
+      return;
+    }
+
+    // ปุ่ม "เพิ่มรูป" ในเมนูรวม (ข้อ 2) — แค่เตือนให้ส่งรูปเข้ามาในแชท ไม่มี action พิเศษ
+    if (data.action === 'prompt_add_photo') {
+      const seqForPrompt = userProperties.getProperty(userId + '_seq');
+      if (!seqForPrompt) {
+        replyText(event.replyToken, '⚠️ ยังไม่ได้กำหนด SEQ ครับ กรุณาพิมพ์หมายเลข SEQ ก่อน');
+        return;
+      }
+      sendLineReply(event.replyToken, [{
+        type: 'text',
+        text: `📷 ส่งรูปภาพสำหรับ SEQ ${seqForPrompt} เข้ามาในแชทได้เลยครับ (ส่งได้หลายรูปพร้อมกัน)`,
+        quickReply: { items: buildSeqActionQuickReplyItems(seqForPrompt) }
+      }]);
+      return;
+    }
+
+    // ปุ่ม "📝 ข้อมูลเพิ่มเติม" ในเมนูรวม (ข้อ 6) — เปิดหน้า popup กรอกข้อมูลเสริมให้ SUMMARY
+    if (data.action === 'extra_info_form') {
+      const sheetIdForExtra = userProperties.getProperty(userId + '_sheetId');
+      const sheetNameForExtra = userProperties.getProperty(userId + '_sheetName');
+      const seqForExtra = userProperties.getProperty(userId + '_seq');
+      if (!sheetIdForExtra || !seqForExtra) {
+        replyText(event.replyToken, '⚠️ ยังไม่ได้กำหนด SEQ ครับ กรุณาพิมพ์หมายเลข SEQ ก่อน');
+        return;
+      }
+      const extraInfoUrl = buildPopupUrl('extra_info', { sheetId: sheetIdForExtra, sheetName: sheetNameForExtra, seq: seqForExtra, uid: userId });
+      sendLineReply(event.replyToken, [{
+        type: 'template',
+        altText: `SEQ ${seqForExtra} — กรอกข้อมูลเพิ่มเติม`,
+        template: {
+          type: 'buttons',
+          text: `📝 กรอกข้อมูลเพิ่มเติมสำหรับ SEQ ${seqForExtra}`,
+          actions: [
+            { type: 'uri', label: '📝 ข้อมูลเพิ่มเติม', uri: extraInfoUrl }
+          ]
+        },
+        quickReply: { items: buildSeqActionQuickReplyItems(seqForExtra) }
+      }]);
       return;
     }
   }
@@ -245,6 +431,7 @@ function handleEvent(event) {
       try {
         const userName = getLineUserProfile(userId);
         const bookedSeqs = processBookingInSummarySheet(currentSheetId, count, userName);
+        addBookedSeqs(currentSheetId, userName, bookedSeqs);
         userProperties.deleteProperty(userId + '_awaitingBookingCount');
         userProperties.setProperty(userId + '_pendingFlightSeqs', JSON.stringify(bookedSeqs));
         replyText(
@@ -268,9 +455,11 @@ function handleEvent(event) {
         userProperties.deleteProperty(userId + '_pendingFlightSeqs');
         userProperties.setProperty(userId + '_awaitingSeq', 'true');
         const seqListStr = bookedSeqs.map(s => `• SEQ ${s}`).join('\n');
+        const userNameForList = getLineUserProfile(userId);
+        const bookedListText = formatBookedSeqListText(currentSheetId, userNameForList);
         replySeqPromptWithBookingOption(
           event.replyToken,
-          `🎉 **สรุปการจองสำเร็จ!**\n\n✈️ **Flight No.:** ${formattedFlightNo}\n📋 **รายการ SEQ ที่จอง (${bookedSeqs.length} คน):**\n${seqListStr}\n\n---------------------------\nกรุณาพิมพ์หมายเลข SEQ ที่ต้องการถ่ายรูปจัดการต่อได้เลยครับ:`
+          `🎉 **สรุปการจองสำเร็จ!**\n\n✈️ **Flight No.:** ${formattedFlightNo}\n📋 **รายการ SEQ ที่จอง (${bookedSeqs.length} คน):**\n${seqListStr}\n\n---------------------------\n${bookedListText}กรุณาพิมพ์หมายเลข SEQ ที่ต้องการถ่ายรูปจัดการต่อได้เลยครับ:`
         );
       } catch (err) {
         debugLog('Save Flight Error: ' + err);
@@ -288,7 +477,11 @@ function handleEvent(event) {
       }
       userProperties.setProperty(userId + '_seq', text);
       userProperties.deleteProperty(userId + '_awaitingSeq');
-      replyText(event.replyToken, `📸 กำหนด SEQ: [ ${text} ] เรียบร้อยแล้ว\n\nคุณสามารถกดเลือกถ่ายรูป/ส่งรูปภาพเข้ามาได้รวดเดียวเลยครับ`);
+      sendLineReply(event.replyToken, [{
+        type: 'text',
+        text: `📸 กำหนด SEQ: [ ${text} ] เรียบร้อยแล้ว\n\nคุณสามารถส่งรูปภาพเข้ามาได้เลย หรือเลือกทำรายการด้านล่าง:`,
+        quickReply: { items: buildSeqActionQuickReplyItems(text) }
+      }]);
       return;
     }
 
@@ -297,7 +490,7 @@ function handleEvent(event) {
 }
 
 // ==========================================
-// 📸 Image Handling & Single-Click Classification
+// 📸 Image Handling & Classification (ข้อ 5 — popup HTML แทน Flex ทีละใบ)
 // ==========================================
 
 // ชื่อไฟล์ที่ใช้แสดงผลสำหรับแต่ละประเภทเอกสาร (photoType ภายในระบบ -> label ชื่อไฟล์)
@@ -308,37 +501,15 @@ const PHOTO_TYPE_FILE_LABELS = {
   'ETC': 'ETC'
 };
 
-// ปุ่ม 4 ประเภทเอกสาร เรียง 2x2 (LINE Flex ไม่รองรับ layout "grid" ต้องใช้ vertical ซ้อน horizontal แทน)
-function buildClassifyButtonsBox(fileId) {
-  return {
-    "type": "box",
-    "layout": "vertical",
-    "margin": "md",
-    "spacing": "sm",
-    "contents": [
-      {
-        "type": "box",
-        "layout": "horizontal",
-        "spacing": "sm",
-        "contents": [
-          { "type": "button", "style": "primary", "height": "sm", "action": { "type": "postback", "label": "📘 Passport", "data": `action=classify_image&type=PASSPORT&fileId=${fileId}` } },
-          { "type": "button", "style": "secondary", "height": "sm", "action": { "type": "postback", "label": "✈️ Ticket", "data": `action=classify_image&type=Return Ticket&fileId=${fileId}` } }
-        ]
-      },
-      {
-        "type": "box",
-        "layout": "horizontal",
-        "spacing": "sm",
-        "contents": [
-          { "type": "button", "style": "secondary", "height": "sm", "action": { "type": "postback", "label": "🏨 Hotel", "data": `action=classify_image&type=Accomodation&fileId=${fileId}` } },
-          { "type": "button", "style": "secondary", "height": "sm", "action": { "type": "postback", "label": "📁 ETC", "data": `action=classify_image&type=ETC&fileId=${fileId}` } }
-        ]
-      }
-    ]
-  };
-}
+// ตัวเลือกประเภทเอกสารที่โชว์ในหน้า popup จัดการรูป (value ต้องตรงกับคีย์ของ PHOTO_TYPE_FILE_LABELS)
+const PHOTO_TYPE_OPTIONS = [
+  { value: 'PASSPORT', label: 'PASSPORT' },
+  { value: 'Return Ticket', label: 'RETURN TICKET' },
+  { value: 'Accomodation', label: 'ACCOMMODATION' },
+  { value: 'ETC', label: 'ETC' }
+];
 
-// อัปโหลดรูปที่เพิ่งได้รับขึ้น Drive ทันที (ตั้งชื่อชั่วคราว) เพื่อเอา URL มาโชว์พรีวิวใน Flex Message
+// อัปโหลดรูปที่เพิ่งได้รับขึ้น Drive ทันที (ตั้งชื่อชั่วคราว) เพื่อเอา URL มาโชว์พรีวิวในหน้า popup
 function uploadImageToPendingDrive(msgId, seq, sheetName) {
   debugLog(`uploadImageToPendingDrive: msgId=${msgId} seq=${seq} sheetName=${sheetName}`);
   const folder = getOrCreatePhotoFolder(MAIN_FOLDER_NAME, sheetName);
@@ -353,71 +524,6 @@ function uploadImageToPendingDrive(msgId, seq, sheetName) {
   debugLog(`drive file created: ${file.getId()} url=${imageUrl}`);
 
   return { fileId: file.getId(), imageUrl: imageUrl };
-}
-
-// สร้าง object ของ Flex classify menu (ใช้ทั้งตอนเริ่มจัดการรูป และตอนต่อรูปถัดไปในคิว)
-function buildClassificationFlexMessage(fileId, imageUrl, headerText) {
-  return {
-    "type": "flex",
-    "altText": "กรุณาระบุประเภทเอกสาร",
-    "contents": {
-      "type": "bubble",
-      "hero": {
-        "type": "image",
-        "url": imageUrl,
-        "size": "full",
-        "aspectRatio": "4:3",
-        "aspectMode": "cover"
-      },
-      "body": {
-        "type": "box",
-        "layout": "vertical",
-        "contents": [
-          { "type": "text", "text": headerText || "📌 ระบุประเภทเอกสารสำหรับรูปนี้", "weight": "bold", "size": "sm" },
-          buildClassifyButtonsBox(fileId),
-          { "type": "separator", "margin": "lg" },
-          {
-            "type": "button",
-            "style": "link",
-            "color": "#FF3B30",
-            "action": { "type": "postback", "label": "🏁 จบงาน / สรุปข้อมูล", "data": "action=finish_case" }
-          }
-        ]
-      }
-    }
-  };
-}
-
-function sendImageClassificationMenu(replyToken, fileId, imageUrl, headerText) {
-  sendLineReply(replyToken, [buildClassificationFlexMessage(fileId, imageUrl, headerText)]);
-}
-
-// ใช้เมื่อส่ง Flex พร้อมรูป preview ไม่สำเร็จ (replyToken ใช้ไปแล้ว) - ส่งเมนูแบบไม่มีรูปผ่าน push แทน
-function sendImageClassificationMenuFallback(userId, fileId) {
-  const flexMessage = {
-    "type": "flex",
-    "altText": "กรุณาระบุประเภทเอกสาร",
-    "contents": {
-      "type": "bubble",
-      "body": {
-        "type": "box",
-        "layout": "vertical",
-        "contents": [
-          { "type": "text", "text": "📌 ระบุประเภทเอกสารสำหรับรูปล่าสุด", "weight": "bold", "size": "sm" },
-          { "type": "text", "text": "⚠️ ไม่สามารถแสดงรูปตัวอย่างได้ (การเชื่อมต่อรูปภาพจาก Google Drive ขัดข้องชั่วคราว) แต่ยังกดเลือกประเภทเอกสารด้านล่างได้ตามปกติครับ", "size": "xxs", "color": "#FF3B30", "wrap": true, "margin": "sm" },
-          buildClassifyButtonsBox(fileId),
-          { "type": "separator", "margin": "lg" },
-          {
-            "type": "button",
-            "style": "link",
-            "color": "#FF3B30",
-            "action": { "type": "postback", "label": "🏁 จบงาน / สรุปข้อมูล", "data": "action=finish_case" }
-          }
-        ]
-      }
-    }
-  };
-  pushMessages(userId, [flexMessage]);
 }
 
 // ==========================================
@@ -457,34 +563,47 @@ function clearPendingQueueState(userId, seq) {
   userProperties.deleteProperty(`${userId}_manageTotal_${seq}`);
 }
 
-// ข้อความตอบกลับทันทีที่รับรูป (แทนการเด้ง Flex ทันที) พร้อม Quick Reply ให้กดจัดการรูปเมื่อพร้อม
-function replyBatchAck(replyToken, seq, n) {
+// เมนู quick reply มาตรฐานหลัง SEQ ถูกกำหนด/สลับ (ข้อ 2) — ใช้ซ้ำได้ทุกจุดที่ SEQ พร้อมใช้งาน
+function buildSeqActionQuickReplyItems(seq) {
+  return [
+    { type: 'action', action: { type: 'postback', label: '📷 เพิ่มรูป', data: 'action=prompt_add_photo', displayText: 'เพิ่มรูป' } },
+    { type: 'action', action: { type: 'postback', label: '🗂️ จัดการรูปภาพ', data: 'action=manage_photos', displayText: 'จัดการรูปภาพ' } },
+    { type: 'action', action: { type: 'postback', label: '📥 นำเข้าข้อมูล', data: `action=import_ocr&seq=${seq}`, displayText: 'นำเข้าข้อมูล' } },
+    { type: 'action', action: { type: 'postback', label: '📝 ข้อมูลเพิ่มเติม', data: 'action=extra_info_form', displayText: 'ข้อมูลเพิ่มเติม' } },
+    { type: 'action', action: { type: 'postback', label: '🏁 จบงาน', data: 'action=finish_case', displayText: 'จบงาน' } },
+    { type: 'action', action: { type: 'postback', label: '📌 จอง SEQ', data: 'action=book_seq', displayText: 'จองSEQ' } },
+    { type: 'action', action: { type: 'postback', label: '🔢 เลือก SEQ', data: 'action=menu_select_seq', displayText: 'เลือกSEQ' } }
+  ];
+}
+
+// ข้อ 2 (ข้อย่อย 3): กด "นำเข้าข้อมูล" ตอนยังไม่มีผล OCR พร้อม — ให้ quick reply ทางลัด [เพิ่มรูป, เลือก SEQ, จอง SEQ] แทน
+function replyNoOcrDataYet(replyToken, seq, text) {
   const message = {
     type: 'text',
-    text: `📸 SEQ: ${seq} รับรูปทั้งหมด ${n} รูปเรียบร้อยแล้ว\nรอจัดการรูป ${n}/${n}\n\nต้องการทำอะไรต่อดีครับ?`,
+    text,
     quickReply: {
       items: [
-        { type: 'action', action: { type: 'postback', label: '🗂️ จัดการรูป', data: 'action=manage_photos', displayText: 'จัดการรูป' } },
-        { type: 'action', action: { type: 'postback', label: '📸 เลือก SEQ', data: 'action=menu_select_seq', displayText: 'เลือก SEQ' } },
-        { type: 'action', action: { type: 'postback', label: '📌 จอง SEQ', data: 'action=menu_reserve_seq', displayText: 'จอง SEQ' } }
+        { type: 'action', action: { type: 'postback', label: '📷 เพิ่มรูป', data: 'action=prompt_add_photo', displayText: 'เพิ่มรูป' } },
+        { type: 'action', action: { type: 'postback', label: '🔢 เลือก SEQ', data: 'action=menu_select_seq', displayText: 'เลือกSEQ' } },
+        { type: 'action', action: { type: 'postback', label: '📌 จอง SEQ', data: 'action=book_seq', displayText: 'จองSEQ' } }
       ]
     }
   };
   sendLineReply(replyToken, [message]);
 }
 
-function seqNavQuickReplyItems(includeEnd) {
-  const items = [
-    { type: 'action', action: { type: 'postback', label: '📸 เลือก SEQ', data: 'action=menu_select_seq', displayText: 'เลือก SEQ' } },
-    { type: 'action', action: { type: 'postback', label: '📌 จอง SEQ', data: 'action=menu_reserve_seq', displayText: 'จอง SEQ' } }
-  ];
-  if (includeEnd) {
-    items.push({ type: 'action', action: { type: 'postback', label: '🏁 สิ้นสุด', data: 'action=menu_end', displayText: 'สิ้นสุด' } });
-  }
-  return items;
+// ข้อความตอบกลับทันทีที่รับรูป (แทนการเด้ง Flex ทันที) พร้อม Quick Reply ให้กดจัดการรูปเมื่อพร้อม
+// n = จำนวนรูปที่ส่งเข้ามาในรอบ (burst) นี้, total = จำนวนรูปสะสมทั้งหมดที่รอจัดการของ SEQ นี้ (ข้อ 4)
+function replyBatchAck(replyToken, seq, n, total) {
+  const message = {
+    type: 'text',
+    text: `📸 SEQ: ${seq} รับรูปทั้งหมด ${n}/${total} รูปเรียบร้อยแล้ว\n\nต้องการทำอะไรต่อดีครับ?`,
+    quickReply: { items: buildSeqActionQuickReplyItems(seq) }
+  };
+  sendLineReply(replyToken, [message]);
 }
 
-// ปุ่ม "🗂️ จัดการรูป" — หยิบรูปแรกจากคิว pending ของ SEQ ปัจจุบันมาโชว์ Flex ให้จำแนก
+// ปุ่ม "🗂️ จัดการรูปภาพ" — ส่งลิงก์เปิดหน้า popup (ข้อ 5) แสดงรูปทั้งหมดในคิว pending ของ SEQ นี้พร้อมกัน
 function handleManagePhotos(event, userId) {
   const userProperties = PropertiesService.getUserProperties();
   const seq = userProperties.getProperty(userId + '_seq');
@@ -499,31 +618,31 @@ function handleManagePhotos(event, userId) {
     return;
   }
 
-  userProperties.setProperty(userId + '_manageTotal_' + seq, String(queue.length));
-  const first = queue[0];
-  const headerText = `📌 SEQ ${seq} — ระบุประเภทเอกสาร (เหลือ ${queue.length} รูป)`;
-
-  try {
-    const flexMessage = buildClassificationFlexMessage(first.fileId, first.imageUrl, headerText);
-    flexMessage.quickReply = { items: seqNavQuickReplyItems(false) };
-    sendLineReply(event.replyToken, [flexMessage]);
-  } catch (err) {
-    debugLog('handleManagePhotos flex failed, fallback: ' + err);
-    sendImageClassificationMenuFallback(userId, first.fileId);
-  }
-}
-
-function handleImageClassification(event, userId, fileId, photoType) {
-  const userProperties = PropertiesService.getUserProperties();
   const sheetId = userProperties.getProperty(userId + '_sheetId');
   const sheetName = userProperties.getProperty(userId + '_sheetName');
-  const seq = userProperties.getProperty(userId + '_seq');
+  const url = buildPopupUrl('manage_photos', { sheetId, sheetName, seq, uid: userId });
 
+  sendLineReply(event.replyToken, [{
+    type: 'template',
+    altText: `SEQ ${seq} มีรูปรอจัดการ ${queue.length} รูป — กดเปิดหน้าจัดการรูปภาพ`,
+    template: {
+      type: 'buttons',
+      text: `🗂️ SEQ ${seq} มีรูปรอจัดการ ${queue.length} รูป`,
+      actions: [
+        { type: 'uri', label: '🗂️ จัดการรูปภาพ', uri: url }
+      ]
+    },
+    quickReply: { items: buildSeqActionQuickReplyItems(seq) }
+  }]);
+}
+
+// บันทึกรูป 1 ใบตามประเภทที่เลือก (ย้ายไฟล์ Drive + เขียนแท็บ PHOTO + ส่ง OCR ถ้าเป็น PASSPORT)
+// เป็นฟังก์ชัน "บริสุทธิ์" ไม่ผูกกับ LINE event/replyToken เพราะเรียกจากหน้า popup (doPost) ซึ่งไม่มี replyToken ให้ตอบกลับตรงๆ
+function classifyAndSavePhoto(sheetId, sheetName, seq, fileId, photoType) {
   try {
     const targetRow = findSeqRowInSheet(sheetId, seq);
     if (targetRow === -1) {
-      replyText(event.replyToken, `❌ ไม่พบหมายเลข SEQ "${seq}" ในคอลัมน์ A ของแท็บ PHOTO`);
-      return;
+      return { ok: false, photoType, error: `ไม่พบหมายเลข SEQ "${seq}" ในคอลัมน์ A ของแท็บ PHOTO` };
     }
 
     const folder = getOrCreatePhotoFolder(MAIN_FOLDER_NAME, sheetName);
@@ -548,56 +667,213 @@ function handleImageClassification(event, userId, fileId, photoType) {
       saveImageUrlToSheetRow(sheetId, targetRow, photoType, imageUrl, null);
     }
 
-    // เอาออกจากคิว pending แล้วคำนวณ progress สำหรับ flow "จัดการรูป" (ข้อ 3.6)
-    const remainingQueue = removeFromPendingQueue(userId, seq, fileId);
-    const manageTotalStr = userProperties.getProperty(userId + '_manageTotal_' + seq);
-    const total = manageTotalStr ? parseInt(manageTotalStr, 10) : (remainingQueue.length + 1);
-    const remaining = remainingQueue.length;
-
-    const messages = [];
-    let includeImportButton = false;
-
+    let ocrQueued = false;
+    let ocrError = '';
     if (photoType === 'PASSPORT') {
       const queued = submitPassportOcrAsync(sheetId, seq, file.getBlob());
       if (queued) {
         recordOcrQueued(sheetId, seq);
-        messages.push(buildOcrQueuedMessage(seq));
-        includeImportButton = true;
+        ocrQueued = true;
       } else {
-        messages.push({
-          type: 'text',
-          text: `⚠️ บันทึกรูป [Passport] แล้ว แต่ส่งไปประมวลผล OCR ไม่สำเร็จ\nลองกดปุ่ม "🔢 เปลี่ยน SEQ" แล้วเลือก SEQ นี้ใหม่เพื่อถ่ายซ้ำได้เลยครับ (ถ่ายซ้ำจะ overwrite ทับไฟล์ [Passport] เดิมของ SEQ นี้เสมอ ไม่มีไฟล์ซ้อนกัน)`
-        });
+        ocrError = 'บันทึกรูป [Passport] แล้ว แต่ส่งไปประมวลผล OCR ไม่สำเร็จ ลองเปลี่ยน SEQ นี้ใหม่แล้วถ่ายซ้ำได้เลยครับ (ถ่ายซ้ำจะ overwrite ทับไฟล์เดิมเสมอ)';
       }
-    } else {
-      messages.push({ type: 'text', text: `✅ บันทึกรูปภาพเป็น [${photoType}] เรียบร้อยแล้ว` });
     }
 
-    // LINE แสดง quickReply ของ "ข้อความสุดท้าย" เท่านั้นเมื่อส่งหลายข้อความพร้อมกัน จึงต้องรวมปุ่มทั้งหมด (นำเข้าข้อมูล/เลือก SEQ/จอง SEQ/สิ้นสุด) ไว้ที่ข้อความสุดท้าย
-    if (remaining > 0) {
-      messages.push({ type: 'text', text: `📋 อัพเดท SEQ: ${seq} รอจัดการรูป ${remaining}/${total}` });
-      const next = remainingQueue[0];
-      const nextFlex = buildClassificationFlexMessage(next.fileId, next.imageUrl, `📌 SEQ ${seq} — ระบุประเภทเอกสาร (เหลือ ${remaining} รูป)`);
-      const items = seqNavQuickReplyItems(false);
-      if (includeImportButton) items.unshift(importOcrQuickReplyItem(seq));
-      nextFlex.quickReply = { items };
-      messages.push(nextFlex);
-    } else {
-      const items = seqNavQuickReplyItems(true);
-      if (includeImportButton) items.unshift(importOcrQuickReplyItem(seq));
-      messages.push({
-        type: 'text',
-        text: `🎉 SEQ ${seq} จัดการรูปภาพครบ ${total}/${total} เรียบร้อย!\n\nถ่ายเอกสารอื่นครบแล้วกด "🏁 จบงาน" เพื่อสรุปข้อมูลได้เลยครับ`,
-        quickReply: { items }
-      });
-      userProperties.deleteProperty(userId + '_manageTotal_' + seq);
-    }
-
-    sendLineReply(event.replyToken, messages);
+    return { ok: true, photoType, ocrQueued, ocrError };
   } catch (err) {
-    debugLog('Classification error: ' + err);
-    replyText(event.replyToken, `❌ เกิดข้อผิดพลาด: ${err.message}`);
+    return { ok: false, photoType, error: err.message };
   }
+}
+
+// เมนู quick reply มาตรฐานหลังปิดหน้า popup จัดการรูป (ข้อ 5)
+function popupFollowUpQuickReplyItems() {
+  return [
+    { type: 'action', action: { type: 'postback', label: '📌 จอง SEQ', data: 'action=book_seq', displayText: 'จองSEQ' } },
+    { type: 'action', action: { type: 'postback', label: '🔢 เลือก SEQ', data: 'action=menu_select_seq', displayText: 'เลือกSEQ' } },
+    { type: 'action', action: { type: 'postback', label: '🏁 สิ้นสุดแผ่นงาน', data: 'action=menu_end', displayText: 'สิ้นสุดแผ่นงาน' } }
+  ];
+}
+
+// เรียกจาก doPost เมื่อหน้า popup กด "เสร็จสิ้น" — บันทึกทุกรูปที่เลือกประเภทแล้วรวดเดียว แล้ว push ข้อความสรุปกลับไป
+function handleSavePhotoClassification(e, body) {
+  try {
+    const sheetId = e.parameter.sheetId;
+    const sheetName = e.parameter.sheetName || '';
+    const seq = e.parameter.seq;
+    const uid = e.parameter.uid;
+    const classifications = (body && body.classifications) || [];
+
+    if (!sheetId || !seq || !uid || classifications.length === 0) {
+      return jsonResponse({ success: false, error: 'พารามิเตอร์ไม่ครบ' });
+    }
+
+    let savedCount = 0;
+    const noteLines = [];
+    for (const item of classifications) {
+      const result = classifyAndSavePhoto(sheetId, sheetName, seq, item.fileId, item.photoType);
+      if (result.ok) {
+        removeFromPendingQueue(uid, seq, item.fileId);
+        savedCount++;
+        if (result.ocrError) noteLines.push(`⚠️ ${result.ocrError}`);
+      } else {
+        noteLines.push(`❌ [${item.photoType}] ${result.error}`);
+      }
+    }
+
+    PropertiesService.getUserProperties().deleteProperty(uid + '_manageTotal_' + seq);
+
+    const total = classifications.length;
+    const noteText = noteLines.length > 0 ? `\n\n${noteLines.join('\n')}` : '';
+    pushMessages(uid, [{
+      type: 'text',
+      text: `🎉 จัดการรูปภาพเสร็จสิ้น ${savedCount}/${total} รูป${noteText}\n\nกรุณาเลือกสิ่งที่จะทำถัดไป:`,
+      quickReply: { items: popupFollowUpQuickReplyItems() }
+    }]);
+
+    return jsonResponse({ success: true, savedCount, total });
+  } catch (err) {
+    debugLog('handleSavePhotoClassification error: ' + err);
+    return jsonResponse({ success: false, error: err.message });
+  }
+}
+
+// เรียกจาก doPost เมื่อหน้า popup กด "ทำภายหลัง" — ไม่บันทึกอะไร คิวเดิมค้างไว้ครบ แค่แจ้งเตือนแล้วปิด
+function handleDeferPhotoClassification(e) {
+  try {
+    const seq = e.parameter.seq;
+    const uid = e.parameter.uid;
+    const remaining = getPendingQueue(uid, seq).length;
+
+    pushMessages(uid, [{
+      type: 'text',
+      text: `📋 ยังมีรูปค้างจัดการอยู่ ${remaining} รูปสำหรับ SEQ ${seq} ครับ กดปุ่ม "จัดการรูปภาพ" เพื่อจัดการต่อได้ทีหลัง\n\nกรุณาเลือกสิ่งที่จะทำถัดไป:`,
+      quickReply: { items: popupFollowUpQuickReplyItems() }
+    }]);
+
+    return jsonResponse({ success: true });
+  } catch (err) {
+    debugLog('handleDeferPhotoClassification error: ' + err);
+    return jsonResponse({ success: false, error: err.message });
+  }
+}
+
+// เสิร์ฟหน้า popup จัดการรูปภาพ (ข้อ 5) — แสดงรูปทั้งหมดในคิว pending ของ SEQ นี้พร้อมกัน
+function renderManagePhotosPage(e) {
+  const sheetId = e.parameter.sheetId;
+  const sheetName = e.parameter.sheetName || '';
+  const seq = e.parameter.seq;
+  const uid = e.parameter.uid;
+  const queue = getPendingQueue(uid, seq);
+  // Apps Script Web App เด้ง (redirect) ไปโหลด HTML จริงจากโดเมน script.googleusercontent.com เสมอ
+  // ทำให้ window.location.href ในเบราว์เซอร์ "ไม่ใช่" URL /exec ที่ doPost รับฟังอยู่ — ห้าม fetch กลับไปที่ location.href ตรงๆ
+  // ต้องประกอบ URL /exec ที่แท้จริงขึ้นมาเองฝั่งเซิร์ฟเวอร์แล้วฝังเป็นค่าคงที่ลงในหน้า
+  const apiUrl = buildPopupUrl('manage_photos', { sheetId, sheetName, seq, uid });
+
+  const rowsHtml = queue.map((item, idx) => {
+    const optionsHtml = PHOTO_TYPE_OPTIONS.map(opt => `
+      <label class="type-opt">
+        <input type="radio" name="type_${idx}" value="${escapeHtml(opt.value)}">
+        <span>${escapeHtml(opt.label)}</span>
+      </label>`).join('');
+    return `
+      <div class="card photo-row" data-file-id="${escapeHtml(item.fileId)}">
+        <div class="photo-row-inner">
+          <img src="${escapeHtml(item.imageUrl)}" alt="รูปที่ ${idx + 1}">
+          <div class="type-opts">${optionsHtml}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  const html = `
+    <style>
+      ${POPUP_SHARED_STYLE}
+      .photo-row-inner { display: flex; gap: 10px; padding: 10px; align-items: stretch; }
+      .photo-row-inner img { width: 96px; height: 96px; object-fit: cover; border-radius: 10px; background: #eee; flex-shrink: 0; }
+      .type-opts { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; align-content: center; }
+      .type-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; background: #f4f5f7; border-radius: 8px; padding: 8px 6px; }
+      .type-opt input { width: 16px; height: 16px; accent-color: #06c755; }
+      .photo-row.selected .photo-row-inner { box-shadow: inset 0 0 0 2px #06c755; border-radius: 14px; }
+    </style>
+    <header>
+      🗂️ จัดการรูปภาพ
+      <small>SEQ ${escapeHtml(seq)} • ${escapeHtml(sheetName)} • ${queue.length} รูป</small>
+    </header>
+    <div class="container" id="listView">
+      ${rowsHtml || '<p style="text-align:center;color:#888;padding:40px 0;">ไม่มีรูปที่รอจัดการแล้วครับ</p>'}
+    </div>
+    <div class="warn" id="warn">⚠️ กรุณาเลือกประเภทเอกสารให้ครบทุกรูปก่อนกด "เสร็จสิ้น" ครับ (หรือกด "ทำภายหลัง" ถ้ายังไม่พร้อม)</div>
+    <div class="done-screen" id="doneView" style="display:none;"></div>
+    <div class="footer-bar" id="footerBar">
+      <button class="btn-secondary" id="btnDefer">⏳ ทำภายหลัง</button>
+      <button class="btn-primary" id="btnFinish">✅ เสร็จสิ้น</button>
+    </div>
+    <script>
+      var BASE_URL = ${JSON.stringify(apiUrl)};
+
+      document.querySelectorAll('.photo-row input[type=radio]').forEach(function (input) {
+        input.addEventListener('change', function () {
+          input.closest('.photo-row').classList.add('selected');
+        });
+      });
+
+      function setBusy(busy) {
+        document.getElementById('btnFinish').disabled = busy;
+        document.getElementById('btnDefer').disabled = busy;
+      }
+
+      function showDone(message) {
+        document.getElementById('listView').style.display = 'none';
+        document.getElementById('footerBar').style.display = 'none';
+        document.getElementById('warn').style.display = 'none';
+        var doneView = document.getElementById('doneView');
+        doneView.style.display = 'block';
+        doneView.innerHTML = '<div class="icon">✅</div><p>' + message + '</p><p style="color:#999;font-size:13px;">กดปุ่มปิด (✕) มุมขวาบนเพื่อกลับไปที่แชทได้เลยครับ</p>';
+      }
+
+      function showError(err) {
+        setBusy(false);
+        alert('เกิดข้อผิดพลาด: ' + (err && err.message ? err.message : err));
+      }
+
+      document.getElementById('btnFinish').addEventListener('click', function () {
+        var rows = document.querySelectorAll('.photo-row');
+        var classifications = [];
+        var allSelected = true;
+        rows.forEach(function (row) {
+          var checked = row.querySelector('input[type=radio]:checked');
+          if (!checked) { allSelected = false; return; }
+          classifications.push({ fileId: row.dataset.fileId, photoType: checked.value });
+        });
+        if (rows.length === 0) { showDone('ไม่มีรูปที่ต้องจัดการแล้วครับ'); return; }
+        if (!allSelected) { document.getElementById('warn').style.display = 'block'; return; }
+
+        setBusy(true);
+        fetch(BASE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action: 'save_photo_classification', classifications: classifications })
+        }).then(function (r) { return r.json(); }).then(function (res) {
+          if (!res.success) throw new Error(res.error || 'บันทึกไม่สำเร็จ');
+          showDone('จัดการรูปภาพเสร็จสิ้น ' + res.savedCount + '/' + res.total + ' รูปเรียบร้อยแล้ว');
+        }).catch(showError);
+      });
+
+      document.getElementById('btnDefer').addEventListener('click', function () {
+        setBusy(true);
+        fetch(BASE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action: 'defer_photo_classification' })
+        }).then(function (r) { return r.json(); }).then(function (res) {
+          if (!res.success) throw new Error(res.error || 'เกิดข้อผิดพลาด');
+          showDone('ปิดหน้าจัดการรูปภาพแล้ว รูปที่ยังไม่ได้เลือกประเภทจะค้างในคิวไว้ให้จัดการทีหลังครับ');
+        }).catch(showError);
+      });
+    </script>`;
+
+  return HtmlService.createHtmlOutput(html)
+    .setTitle('จัดการรูปภาพ — SEQ ' + seq)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 // ==========================================
@@ -639,19 +915,6 @@ function submitPassportOcrAsync(sheetId, seq, imageBlob) {
     debugLog("submitPassportOcrAsync Exception: " + err.toString());
     return false;
   }
-}
-
-// คืน quickReply item เดียวสำหรับปุ่ม "นำเข้าข้อมูล" ของ SEQ นี้ (นำไปแปะรวมกับ quickReply ของข้อความสุดท้ายในชุด reply)
-function importOcrQuickReplyItem(seq) {
-  return {
-    type: 'action',
-    action: {
-      type: 'postback',
-      label: `📥 นำเข้าข้อมูล SEQ ${seq}`,
-      data: `action=import_ocr&seq=${seq}`,
-      displayText: `นำเข้าข้อมูล SEQ ${seq}`
-    }
-  };
 }
 
 // ข้อความแจ้งว่าส่ง OCR ไปประมวลผลแล้ว (ไม่มี quickReply ในตัวเอง — ปุ่มนำเข้าข้อมูลจะถูกแปะรวมกับข้อความสุดท้ายของชุด reply แทน
@@ -789,14 +1052,14 @@ function importOcrResult(event, userId, seq) {
   const ss = SpreadsheetApp.openById(sheetId);
   const ocrSheet = ss.getSheetByName('OCR_RESULTS');
   if (!ocrSheet) {
-    replyText(event.replyToken, `⏳ ยังไม่มีผลลัพธ์ OCR สำหรับ SEQ "${seq}" ครับ อาจกำลังประมวลผลอยู่ รออีกสักครู่แล้วลองใหม่`);
+    replyNoOcrDataYet(event.replyToken, seq, `⏳ ยังไม่มีผลลัพธ์ OCR สำหรับ SEQ "${seq}" ครับ อาจกำลังประมวลผลอยู่ รออีกสักครู่แล้วลองใหม่`);
     return;
   }
 
   const rowIndex = findRowBySeqCached(sheetId, 'OCR_RESULTS', seq);
 
   if (rowIndex === -1) {
-    replyText(event.replyToken, `⏳ ยังไม่มีผลลัพธ์ OCR สำหรับ SEQ "${seq}" ครับ อาจกำลังประมวลผลอยู่ รออีกสักครู่แล้วลองใหม่`);
+    replyNoOcrDataYet(event.replyToken, seq, `⏳ ยังไม่มีผลลัพธ์ OCR สำหรับ SEQ "${seq}" ครับ อาจกำลังประมวลผลอยู่ รออีกสักครู่แล้วลองใหม่`);
     return;
   }
 
@@ -810,15 +1073,15 @@ function importOcrResult(event, userId, seq) {
   if (status === 'queued') {
     const elapsedMs = queuedAtMs ? (Date.now() - Number(queuedAtMs)) : 0;
     if (elapsedMs > OCR_TIMEOUT_MS) {
-      replyText(event.replyToken, `⚠️ ประมวลผล OCR สำหรับ SEQ "${seq}" นานเกิน 1 นาทีแล้วแต่ยังไม่ได้ผลลัพธ์ อาจเกิดข้อผิดพลาดระหว่างประมวลผล\nกรุณาถ่ายรูป Passport ใหม่อีกครั้งครับ`);
+      replyNoOcrDataYet(event.replyToken, seq, `⚠️ ประมวลผล OCR สำหรับ SEQ "${seq}" นานเกิน 1 นาทีแล้วแต่ยังไม่ได้ผลลัพธ์ อาจเกิดข้อผิดพลาดระหว่างประมวลผล\nกรุณาถ่ายรูป Passport ใหม่อีกครั้งครับ`);
     } else {
-      replyText(event.replyToken, `⏳ ยังไม่มีผลลัพธ์ OCR สำหรับ SEQ "${seq}" ครับ อาจกำลังประมวลผลอยู่ รออีกสักครู่แล้วลองใหม่`);
+      replyNoOcrDataYet(event.replyToken, seq, `⏳ ยังไม่มีผลลัพธ์ OCR สำหรับ SEQ "${seq}" ครับ อาจกำลังประมวลผลอยู่ รออีกสักครู่แล้วลองใหม่`);
     }
     return;
   }
 
   if (status === 'error') {
-    replyText(event.replyToken, `❌ OCR อ่าน SEQ "${seq}" ไม่สำเร็จ: ${remarkCol || 'ไม่ทราบสาเหตุ'}\nกรุณาถ่ายรูป Passport ใหม่อีกครั้งครับ`);
+    replyNoOcrDataYet(event.replyToken, seq, `❌ OCR อ่าน SEQ "${seq}" ไม่สำเร็จ: ${remarkCol || 'ไม่ทราบสาเหตุ'}\nกรุณาถ่ายรูป Passport ใหม่อีกครั้งครับ`);
     return;
   }
 
@@ -960,9 +1223,189 @@ function saveFinalNameAndComplete(event, userId, choice) {
   userProperties.deleteProperty(userId + '_NAME_PE');
 
   // ข้อ 3.7: ล้างคิว/ตัวนับรูป pending ของ SEQ นี้ทิ้ง เพื่อไม่ให้ปนกับ SEQ ใหม่รอบถัดไป
-  clearPendingQueueState(userId, userProperties.getProperty(userId + '_seq'));
+  const finishedSeq = userProperties.getProperty(userId + '_seq');
+  clearPendingQueueState(userId, finishedSeq);
+
+  // ข้อ 1: SEQ นี้จบงานแล้ว เอาออกจากรายการ "SEQ ที่จองไว้แต่ยังไม่จบงาน" ของผู้ใช้คนนี้
+  if (sheetId && finishedSeq) {
+    const userNameForList = getLineUserProfile(userId);
+    removeBookedSeq(sheetId, userNameForList, finishedSeq);
+  }
 
   sendTaskCompletionQuickReply(event.replyToken);
+}
+
+// ==========================================
+// ข้อมูลเพิ่มเติมให้ SUMMARY (ข้อ 6) — popup form: G/H/K/L/N=dropdown, M=checkbox(DEPORT), O=note
+// ==========================================
+// อ่านค่า dropdown จากคอลัมน์เดียวในแท็บอ้างอิง (GROUP/VISA/CLAUSE) ตัดค่าว่างและค่าซ้ำออก
+function getColumnValuesForDropdown(sheetId, tabName, columnLetter) {
+  try {
+    const ss = SpreadsheetApp.openById(sheetId);
+    const sheet = ss.getSheetByName(tabName);
+    if (!sheet) return [];
+    const colIndex = columnLetter.toUpperCase().charCodeAt(0) - 64; // 'A' -> 1, 'M' -> 13
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 1) return [];
+    const values = sheet.getRange(1, colIndex, lastRow, 1).getValues().map(row => String(row[0]).trim());
+    return [...new Set(values.filter(v => v !== ''))];
+  } catch (err) {
+    debugLog(`getColumnValuesForDropdown error (${tabName}!${columnLetter}): ${err}`);
+    return [];
+  }
+}
+
+// เสิร์ฟหน้า popup กรอกข้อมูลเพิ่มเติม (ข้อ 6) — pre-fill ด้วยค่าที่มีอยู่แล้วในแถวของ SEQ นี้ถ้ามี
+function renderExtraInfoPage(e) {
+  const sheetId = e.parameter.sheetId;
+  const sheetName = e.parameter.sheetName || '';
+  const seq = e.parameter.seq;
+  const uid = e.parameter.uid;
+  // เหตุผลเดียวกับ renderManagePhotosPage — ต้องประกอบ URL /exec จริงเอง ห้ามใช้ window.location.href
+  const apiUrl = buildPopupUrl('extra_info', { sheetId, sheetName, seq, uid });
+
+  const groupOldOptions = getColumnValuesForDropdown(sheetId, 'GROUP', 'A');
+  const groupNewOptions = getColumnValuesForDropdown(sheetId, 'GROUP', 'B');
+  const visaOptions = getColumnValuesForDropdown(sheetId, 'VISA', 'M');
+  const clauseOptions = getColumnValuesForDropdown(sheetId, 'CLAUSE', 'A');
+
+  let existing = { g: '', h: '', k: '', l: '', m: false, n: '', o: '' };
+  const targetRow = findRowBySeqCached(sheetId, 'SUMMARY', seq);
+  if (targetRow !== -1) {
+    const ss = SpreadsheetApp.openById(sheetId);
+    const summarySheet = ss.getSheetByName('SUMMARY');
+    const rowValues = summarySheet.getRange(targetRow, 7, 1, 9).getValues()[0]; // คอลัมน์ G..O (7..15)
+    existing = {
+      g: rowValues[0] || '', h: rowValues[1] || '',
+      k: rowValues[4] || '', l: rowValues[5] || '',
+      m: !!rowValues[6], n: rowValues[7] || '', o: rowValues[8] || ''
+    };
+  }
+
+  function buildSelect(id, label, options, selected) {
+    const optionsHtml = options.map(opt =>
+      `<option value="${escapeHtml(opt)}" ${opt === selected ? 'selected' : ''}>${escapeHtml(opt)}</option>`
+    ).join('');
+    return `
+      <div class="field">
+        <label>${label}</label>
+        <select id="${id}">
+          <option value="">— ไม่ระบุ —</option>
+          ${optionsHtml}
+        </select>
+      </div>`;
+  }
+
+  const html = `
+    <style>
+      ${POPUP_SHARED_STYLE}
+      .field { padding: 12px; border-bottom: 1px solid #f0f0f0; }
+      .field:last-child { border-bottom: none; }
+      .field label { display: block; font-size: 13px; font-weight: 700; color: #555; margin-bottom: 6px; }
+      select, textarea { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px; background: #fafafa; }
+      textarea { resize: vertical; min-height: 70px; font-family: inherit; }
+      .checkbox-field { display: flex; align-items: center; gap: 8px; }
+      .checkbox-field input { width: 20px; height: 20px; accent-color: #06c755; }
+    </style>
+    <header>
+      📝 ข้อมูลเพิ่มเติม
+      <small>SEQ ${escapeHtml(seq)} • ${escapeHtml(sheetName)}</small>
+    </header>
+    <div class="container" id="formView">
+      <div class="card">
+        ${buildSelect('groupOld', 'กลุ่มเดิม (6 กลุ่ม)', groupOldOptions, existing.g)}
+        ${buildSelect('groupNew', 'กลุ่มใหม่ (10 กลุ่ม)', groupNewOptions, existing.h)}
+        ${buildSelect('visaNow', 'VISA (NOW)', visaOptions, existing.k)}
+        ${buildSelect('visaEx', 'VISA (EX)', visaOptions, existing.l)}
+        <div class="field checkbox-field">
+          <input type="checkbox" id="deport" ${existing.m ? 'checked' : ''}>
+          <label for="deport" style="margin:0;">DEPORT</label>
+        </div>
+        ${buildSelect('clauses', 'CLAUSES', clauseOptions, existing.n)}
+        <div class="field">
+          <label>NOTE</label>
+          <textarea id="note" placeholder="พิมพ์หมายเหตุ...">${escapeHtml(existing.o)}</textarea>
+        </div>
+      </div>
+    </div>
+    <div class="done-screen" id="doneView" style="display:none;"></div>
+    <div class="footer-bar" id="footerBar">
+      <button class="btn-primary" id="btnSave" style="width:100%;">💾 บันทึก</button>
+    </div>
+    <script>
+      var BASE_URL = ${JSON.stringify(apiUrl)};
+      document.getElementById('btnSave').addEventListener('click', function () {
+        var btn = document.getElementById('btnSave');
+        btn.disabled = true;
+        var payload = {
+          action: 'save_summary_extra',
+          groupOld: document.getElementById('groupOld').value,
+          groupNew: document.getElementById('groupNew').value,
+          visaNow: document.getElementById('visaNow').value,
+          visaEx: document.getElementById('visaEx').value,
+          deport: document.getElementById('deport').checked,
+          clauses: document.getElementById('clauses').value,
+          note: document.getElementById('note').value
+        };
+        fetch(BASE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify(payload)
+        }).then(function (r) { return r.json(); }).then(function (res) {
+          if (!res.success) throw new Error(res.error || 'บันทึกไม่สำเร็จ');
+          document.getElementById('formView').style.display = 'none';
+          document.getElementById('footerBar').style.display = 'none';
+          var doneView = document.getElementById('doneView');
+          doneView.style.display = 'block';
+          doneView.innerHTML = '<div class="icon">✅</div><p>บันทึกข้อมูลเพิ่มเติมเรียบร้อยแล้ว</p><p style="color:#999;font-size:13px;">กดปุ่มปิด (✕) มุมขวาบนเพื่อกลับไปที่แชทได้เลยครับ</p>';
+        }).catch(function (err) {
+          btn.disabled = false;
+          alert('เกิดข้อผิดพลาด: ' + (err && err.message ? err.message : err));
+        });
+      });
+    </script>`;
+
+  return HtmlService.createHtmlOutput(html)
+    .setTitle('ข้อมูลเพิ่มเติม — SEQ ' + seq)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+// เรียกจาก doPost เมื่อหน้า popup ข้อมูลเพิ่มเติมกด "บันทึก"
+function handleSaveSummaryExtra(e, body) {
+  try {
+    const sheetId = e.parameter.sheetId;
+    const seq = e.parameter.seq;
+    const uid = e.parameter.uid;
+    if (!sheetId || !seq) {
+      return jsonResponse({ success: false, error: 'พารามิเตอร์ไม่ครบ' });
+    }
+
+    const targetRow = findRowBySeqCached(sheetId, 'SUMMARY', seq);
+    if (targetRow === -1) {
+      return jsonResponse({ success: false, error: `ไม่พบหมายเลข SEQ "${seq}" ในแท็บ SUMMARY` });
+    }
+
+    const ss = SpreadsheetApp.openById(sheetId);
+    const summarySheet = ss.getSheetByName('SUMMARY');
+    withLock(() => {
+      summarySheet.getRange(targetRow, 7).setValue(body.groupOld || '');   // G
+      summarySheet.getRange(targetRow, 8).setValue(body.groupNew || '');   // H
+      summarySheet.getRange(targetRow, 11).setValue(body.visaNow || '');   // K
+      summarySheet.getRange(targetRow, 12).setValue(body.visaEx || '');    // L
+      summarySheet.getRange(targetRow, 13).setValue(body.deport ? 1 : ''); // M (DEPORT)
+      summarySheet.getRange(targetRow, 14).setValue(body.clauses || '');   // N
+      summarySheet.getRange(targetRow, 15).setValue(body.note || '');      // O
+    });
+
+    if (uid) {
+      pushText(uid, `📝 บันทึกข้อมูลเพิ่มเติมของ SEQ ${seq} เรียบร้อยแล้วครับ`);
+    }
+
+    return jsonResponse({ success: true });
+  } catch (err) {
+    debugLog('handleSaveSummaryExtra error: ' + err);
+    return jsonResponse({ success: false, error: err.message });
+  }
 }
 
 function sendTaskCompletionQuickReply(replyToken) {
