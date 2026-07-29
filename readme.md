@@ -541,7 +541,7 @@ function withLock(fn) {
 // ==========================================
 // BOOKED SEQ TRACKING (ต่อ userName — ใช้โชว์รายการ SEQ ที่จองไว้แต่ยังไม่จบงาน)
 // ==========================================
-// เก็บแยกจากคอลัมน์ E ของ SUMMARY เพราะคอลัมน์ E ถูก importOcrResult() เขียนทับด้วยเลข Passport
+// เก็บแยกจากคอลัมน์ E ของ SUMMARY เพราะคอลัมน์ E ถูก handleSaveSummaryExtra() เขียนทับด้วยเลข Passport
 // หลัง OCR สำเร็จ ทำให้ข้อความ "จองโดย {userName}" หายไปก่อนงานจะจบจริง (ก่อนกด "จบงาน")
 function bookedSeqPropertyKey(sheetId, userName) {
   return `BOOKED_${sheetId}_${userName}`;
@@ -616,6 +616,9 @@ function doPost(e) {
     }
     if (body.action === 'save_summary_extra') {
       return handleSaveSummaryExtra(e, body);
+    }
+    if (body.action === 'fetch_ocr_preview') {
+      return handleFetchOcrPreview(e);
     }
 
     const events = body.events || [];
@@ -817,12 +820,6 @@ function handleEvent(event) {
       return;
     }
 
-    // นำเข้าผลลัพธ์ OCR ที่ประมวลผลเสร็จแล้วจากแท็บ OCR_RESULTS
-    if (data.action === 'import_ocr') {
-      importOcrResult(event, userId, data.seq);
-      return;
-    }
-
     // Quick Reply Menu Actions หลังจบงาน
     if (data.action === 'menu_select_seq') {
       const sheetIdForSelect = userProperties.getProperty(userId + '_sheetId');
@@ -861,28 +858,10 @@ function handleEvent(event) {
       return;
     }
 
-    // ปุ่ม "📝 ข้อมูลเพิ่มเติม" ในเมนูรวม (ข้อ 6) — เปิดหน้า popup กรอกข้อมูลเสริมให้ SUMMARY
-    if (data.action === 'extra_info_form') {
-      const sheetIdForExtra = userProperties.getProperty(userId + '_sheetId');
-      const sheetNameForExtra = userProperties.getProperty(userId + '_sheetName');
-      const seqForExtra = userProperties.getProperty(userId + '_seq');
-      if (!sheetIdForExtra || !seqForExtra) {
-        replyText(event.replyToken, '⚠️ ยังไม่ได้กำหนด SEQ ครับ กรุณาพิมพ์หมายเลข SEQ ก่อน');
-        return;
-      }
-      const extraInfoUrl = buildPopupUrl('extra_info', { sheetId: sheetIdForExtra, sheetName: sheetNameForExtra, seq: seqForExtra, uid: userId });
-      sendLineReply(event.replyToken, [{
-        type: 'template',
-        altText: `SEQ ${seqForExtra} — กรอกข้อมูลเพิ่มเติม`,
-        template: {
-          type: 'buttons',
-          text: `📝 กรอกข้อมูลเพิ่มเติมสำหรับ SEQ ${seqForExtra}`,
-          actions: [
-            { type: 'uri', label: '📝 ข้อมูลเพิ่มเติม', uri: extraInfoUrl }
-          ]
-        },
-        quickReply: { items: buildSeqActionQuickReplyItems(seqForExtra) }
-      }]);
+    // ปุ่ม "📝 ข้อมูลเพิ่มเติม" ในเมนูรวม (ข้อ 6) — เปิดหน้า popup กรอกข้อมูลเสริมให้ SUMMARY (รวมส่วนนำเข้า OCR ไว้ด้านบนสุดแล้ว — ข้อ 12)
+    // "import_ocr" เก็บไว้เผื่อ quick reply เก่าที่ยังค้างแสดงอยู่ในแชทของผู้ใช้ถูกกด ให้เปิดหน้าเดียวกันนี้แทน
+    if (data.action === 'extra_info_form' || data.action === 'import_ocr') {
+      sendExtraInfoFormLink(event, userId);
       return;
     }
   }
@@ -1045,7 +1024,7 @@ function buildSeqActionQuickReplyItems(seq) {
   return [
     { type: 'action', action: { type: 'postback', label: '📷 เพิ่มรูป', data: 'action=prompt_add_photo', displayText: 'เพิ่มรูป' } },
     { type: 'action', action: { type: 'postback', label: '🗂️ จัดการรูปภาพ', data: 'action=manage_photos', displayText: 'จัดการรูปภาพ' } },
-    { type: 'action', action: { type: 'postback', label: '📥 นำเข้าข้อมูล', data: `action=import_ocr&seq=${seq}`, displayText: 'นำเข้าข้อมูล' } },
+    // ข้อ 12: "นำเข้าข้อมูล" ถูกรวมเข้ากับ "ข้อมูลเพิ่มเติม" แล้ว (เป็นส่วนแรกในหน้า popup เดียวกัน) ไม่ต้องมีปุ่มแยกอีกต่อไป
     { type: 'action', action: { type: 'postback', label: '📝 ข้อมูลเพิ่มเติม', data: 'action=extra_info_form', displayText: 'ข้อมูลเพิ่มเติม' } },
     { type: 'action', action: { type: 'postback', label: '🏁 จบงาน', data: 'action=finish_case', displayText: 'จบงาน' } },
     { type: 'action', action: { type: 'postback', label: '📌 จอง SEQ', data: 'action=book_seq', displayText: 'จองSEQ' } },
@@ -1053,20 +1032,29 @@ function buildSeqActionQuickReplyItems(seq) {
   ];
 }
 
-// ข้อ 2 (ข้อย่อย 3): กด "นำเข้าข้อมูล" ตอนยังไม่มีผล OCR พร้อม — ให้ quick reply ทางลัด [เพิ่มรูป, เลือก SEQ, จอง SEQ] แทน
-function replyNoOcrDataYet(replyToken, seq, text) {
-  const message = {
-    type: 'text',
-    text,
-    quickReply: {
-      items: [
-        { type: 'action', action: { type: 'postback', label: '📷 เพิ่มรูป', data: 'action=prompt_add_photo', displayText: 'เพิ่มรูป' } },
-        { type: 'action', action: { type: 'postback', label: '🔢 เลือก SEQ', data: 'action=menu_select_seq', displayText: 'เลือกSEQ' } },
-        { type: 'action', action: { type: 'postback', label: '📌 จอง SEQ', data: 'action=book_seq', displayText: 'จองSEQ' } }
+// ส่งลิงก์เปิดหน้า popup "ข้อมูลเพิ่มเติม" (ข้อ 6) ซึ่งตอนนี้รวมส่วนนำเข้า/แก้ไขข้อมูล OCR ไว้เป็นส่วนแรกด้วยแล้ว (ข้อ 12)
+function sendExtraInfoFormLink(event, userId) {
+  const userProperties = PropertiesService.getUserProperties();
+  const sheetIdForExtra = userProperties.getProperty(userId + '_sheetId');
+  const sheetNameForExtra = userProperties.getProperty(userId + '_sheetName');
+  const seqForExtra = userProperties.getProperty(userId + '_seq');
+  if (!sheetIdForExtra || !seqForExtra) {
+    replyText(event.replyToken, '⚠️ ยังไม่ได้กำหนด SEQ ครับ กรุณาพิมพ์หมายเลข SEQ ก่อน');
+    return;
+  }
+  const extraInfoUrl = buildPopupUrl('extra_info', { sheetId: sheetIdForExtra, sheetName: sheetNameForExtra, seq: seqForExtra, uid: userId });
+  sendLineReply(event.replyToken, [{
+    type: 'template',
+    altText: `SEQ ${seqForExtra} — ข้อมูลเพิ่มเติม / นำเข้าข้อมูล OCR`,
+    template: {
+      type: 'buttons',
+      text: `📝 นำเข้าข้อมูล OCR และกรอกข้อมูลเพิ่มเติมสำหรับ SEQ ${seqForExtra}`,
+      actions: [
+        { type: 'uri', label: '📝 ข้อมูลเพิ่มเติม', uri: extraInfoUrl }
       ]
-    }
-  };
-  sendLineReply(replyToken, [message]);
+    },
+    quickReply: { items: buildSeqActionQuickReplyItems(seqForExtra) }
+  }]);
 }
 
 // ข้อความตอบกลับทันทีที่รับรูป (แทนการเด้ง Flex ทันที) พร้อม Quick Reply ให้กดจัดการรูปเมื่อพร้อม
@@ -1517,94 +1505,69 @@ function invalidateSeqRowCache(sheetId, tabName) {
 }
 
 // เรียกจากปุ่ม "📥 นำเข้าข้อมูล" — ดึงผล OCR จากแท็บ OCR_RESULTS มาบันทึกลง SUMMARY
-function importOcrResult(event, userId, seq) {
-  const userProperties = PropertiesService.getUserProperties();
-  const sheetId = userProperties.getProperty(userId + '_sheetId');
-
-  if (!sheetId) {
-    replyText(event.replyToken, '⚠️ ไม่พบแผ่นงานที่กำลังใช้งาน กรุณาเลือกแผ่นงานก่อนครับ');
-    return;
-  }
-
+// อ่านแถว OCR_RESULTS ของ SEQ นี้แบบดิบๆ ไม่แก้ไขอะไร — ใช้ร่วมกันทั้ง handleFetchOcrPreview (ดูตัวอย่างในหน้า popup)
+// และ handleSaveSummaryExtra (ตอนกด "บันทึก" จริง เพื่อดึงชื่อ regex/passporteye และมาร์ค imported)
+function getOcrResultRowData(sheetId, seq) {
   const ss = SpreadsheetApp.openById(sheetId);
   const ocrSheet = ss.getSheetByName('OCR_RESULTS');
-  if (!ocrSheet) {
-    replyNoOcrDataYet(event.replyToken, seq, `⏳ ยังไม่มีผลลัพธ์ OCR สำหรับ SEQ "${seq}" ครับ อาจกำลังประมวลผลอยู่ รออีกสักครู่แล้วลองใหม่`);
-    return;
-  }
-
+  if (!ocrSheet) return { found: false };
   const rowIndex = findRowBySeqCached(sheetId, 'OCR_RESULTS', seq);
-
-  if (rowIndex === -1) {
-    replyNoOcrDataYet(event.replyToken, seq, `⏳ ยังไม่มีผลลัพธ์ OCR สำหรับ SEQ "${seq}" ครับ อาจกำลังประมวลผลอยู่ รออีกสักครู่แล้วลองใหม่`);
-    return;
-  }
-
+  if (rowIndex === -1) return { found: false };
   const row = ocrSheet.getRange(rowIndex, 1, 1, 11).getValues()[0];
-  const status = row[2];        // C: Status
-  const remarkCol = row[8];     // I: Remark / error message
-  const importStatus = row[9];  // J: ImportStatus
-  const queuedAtMs = row[10];   // K: QueuedAtMs
+  return {
+    found: true,
+    rowIndex,
+    status: row[2],        // C
+    nationality: row[3] || '', // D
+    passportNo: row[4] || '',  // E
+    sex: row[5] || '',         // F
+    regexName: row[6] || '',   // G
+    peName: row[7] || '',      // H
+    remark: row[8] || '',      // I
+    importStatus: row[9] || '', // J
+    queuedAtMs: row[10]        // K
+  };
+}
 
-  // ข้อ 4.2: ถ้าส่งไป OCR แล้วเกิน 1 นาทีแต่ callback ยังไม่มา ให้แจ้งว่าอาจ error แทนที่จะบอกให้รอเฉยๆ ตลอดไป
-  if (status === 'queued') {
-    const elapsedMs = queuedAtMs ? (Date.now() - Number(queuedAtMs)) : 0;
-    if (elapsedMs > OCR_TIMEOUT_MS) {
-      replyNoOcrDataYet(event.replyToken, seq, `⚠️ ประมวลผล OCR สำหรับ SEQ "${seq}" นานเกิน 1 นาทีแล้วแต่ยังไม่ได้ผลลัพธ์ อาจเกิดข้อผิดพลาดระหว่างประมวลผล\nกรุณาถ่ายรูป Passport ใหม่อีกครั้งครับ`);
-    } else {
-      replyNoOcrDataYet(event.replyToken, seq, `⏳ ยังไม่มีผลลัพธ์ OCR สำหรับ SEQ "${seq}" ครับ อาจกำลังประมวลผลอยู่ รออีกสักครู่แล้วลองใหม่`);
+// เรียกจากปุ่ม "นำเข้าข้อมูล OCR" ในหน้า popup ข้อมูลเพิ่มเติม — คืนค่าดิบให้หน้าเว็บกรอกลงฟอร์มที่แก้ไขได้
+// (ไม่เขียนอะไรลงชีตเลย ไม่มาร์ค imported ณ จุดนี้ — จะมาร์คจริงตอนกด "บันทึก" ใน handleSaveSummaryExtra)
+function handleFetchOcrPreview(e) {
+  try {
+    const sheetId = e.parameter.sheetId;
+    const seq = e.parameter.seq;
+    if (!sheetId || !seq) {
+      return jsonResponse({ success: false, message: 'พารามิเตอร์ไม่ครบ' });
     }
-    return;
+
+    const info = getOcrResultRowData(sheetId, seq);
+    if (!info.found) {
+      return jsonResponse({ success: false, message: `⏳ ยังไม่มีผลลัพธ์ OCR สำหรับ SEQ "${seq}" ครับ อาจกำลังประมวลผลอยู่ รออีกสักครู่แล้วลองใหม่` });
+    }
+
+    // ข้อ 4.2: ถ้าส่งไป OCR แล้วเกิน 1 นาทีแต่ callback ยังไม่มา ให้แจ้งว่าอาจ error แทนที่จะบอกให้รอเฉยๆ ตลอดไป
+    if (info.status === 'queued') {
+      const elapsedMs = info.queuedAtMs ? (Date.now() - Number(info.queuedAtMs)) : 0;
+      if (elapsedMs > OCR_TIMEOUT_MS) {
+        return jsonResponse({ success: false, message: `⚠️ ประมวลผล OCR สำหรับ SEQ "${seq}" นานเกิน 1 นาทีแล้วแต่ยังไม่ได้ผลลัพธ์ อาจเกิดข้อผิดพลาดระหว่างประมวลผล\nกรุณาถ่ายรูป Passport ใหม่อีกครั้งครับ` });
+      }
+      return jsonResponse({ success: false, message: `⏳ ยังไม่มีผลลัพธ์ OCR สำหรับ SEQ "${seq}" ครับ อาจกำลังประมวลผลอยู่ รออีกสักครู่แล้วลองใหม่` });
+    }
+
+    if (info.status === 'error') {
+      return jsonResponse({ success: false, message: `❌ OCR อ่าน SEQ "${seq}" ไม่สำเร็จ: ${info.remark || 'ไม่ทราบสาเหตุ'}\nกรุณาถ่ายรูป Passport ใหม่อีกครั้งครับ` });
+    }
+
+    return jsonResponse({
+      success: true,
+      nationality: info.nationality,
+      passportNo: info.passportNo,
+      sex: info.sex,
+      remark: info.remark // ข้อ 5.2: nationality_mismatch — หน้าเว็บจะ alert() ข้อความนี้ทันทีที่กดนำเข้า
+    });
+  } catch (err) {
+    debugLog('handleFetchOcrPreview error: ' + err);
+    return jsonResponse({ success: false, message: err.message });
   }
-
-  if (status === 'error') {
-    replyNoOcrDataYet(event.replyToken, seq, `❌ OCR อ่าน SEQ "${seq}" ไม่สำเร็จ: ${remarkCol || 'ไม่ทราบสาเหตุ'}\nกรุณาถ่ายรูป Passport ใหม่อีกครั้งครับ`);
-    return;
-  }
-
-  if (importStatus === 'imported') {
-    replyText(event.replyToken, `ℹ️ SEQ "${seq}" นำเข้าข้อมูลไปแล้วก่อนหน้านี้ครับ`);
-    return;
-  }
-
-  const summarySheet = ss.getSheetByName('SUMMARY');
-  const targetRow = findRowBySeqCached(sheetId, 'SUMMARY', seq);
-
-  if (targetRow === -1) {
-    replyText(event.replyToken, `❌ ไม่พบหมายเลข SEQ "${seq}" ในแท็บ SUMMARY`);
-    return;
-  }
-
-  const nationality = row[3] || '';
-  const passportNo = row[4] || '';
-  const sex = row[5] || '';
-  const regexName = row[6] || '';
-  const peName = row[7] || '';
-  const remark = row[8] || '';
-
-  if (nationality) summarySheet.getRange(targetRow, 4).setValue(nationality);
-  if (passportNo) summarySheet.getRange(targetRow, 5).setValue(passportNo);
-  if (sex === 'M') {
-    summarySheet.getRange(targetRow, 9).setValue(1);
-    summarySheet.getRange(targetRow, 10).setValue('');
-  } else if (sex === 'F') {
-    summarySheet.getRange(targetRow, 9).setValue('');
-    summarySheet.getRange(targetRow, 10).setValue(1);
-  }
-
-  userProperties.setProperty(userId + '_PASSPORT_NO', passportNo);
-  userProperties.setProperty(userId + '_TEMP_ROW', targetRow.toString());
-  userProperties.setProperty(userId + '_NAME_REGEX', regexName);
-  userProperties.setProperty(userId + '_NAME_PE', peName);
-
-  // Mark ว่า import แล้ว: ขีดฆ่าทั้งแถว + คอลัมน์สุดท้ายใส่ imported
-  const fullRowRange = ocrSheet.getRange(rowIndex, 1, 1, ocrSheet.getLastColumn());
-  fullRowRange.setFontLine('line-through');
-  ocrSheet.getRange(rowIndex, 10).setValue('imported');
-
-  // ข้อ 5.2: ถ้ามี nationality_mismatch (remark ไม่ว่าง) เน้นคำเตือนให้เห็นชัดเจน แยกเป็นบรรทัดพิเศษ ไม่ใช่แค่แปะเงียบๆ ท้ายข้อความ
-  const remarkMsg = remark ? `\n\n⚠️⚠️ คำเตือน: ${remark} ⚠️⚠️\nกรุณาตรวจสอบสัญชาติ/ประเทศผู้ออกเล่มอีกครั้งก่อนยืนยันข้อมูล` : '';
-  replyText(event.replyToken, `✅ นำเข้าข้อมูล Passport SEQ [ ${seq} ] เรียบร้อยแล้ว!${remarkMsg}\n\nถ่ายเอกสารอื่นครบแล้วกด "🏁 จบงาน" เพื่อเลือกชื่อ-นามสกุลได้เลยครับ`);
 }
 
 function showSummaryAndNameOptions(event, userId) {
@@ -1746,16 +1709,19 @@ function renderExtraInfoPage(e) {
   const visaOptions = getColumnValuesForDropdown(sheetId, 'VISA', 'M');
   const clauseOptions = getColumnValuesForDropdown(sheetId, 'CLAUSE', 'A');
 
-  let existing = { g: '', h: '', k: '', l: '', m: false, n: '', o: '' };
+  // ข้อ 12: อ่านคอลัมน์ D..O รวดเดียว (D=สัญชาติ, E=เลขพาสปอร์ต, I/J=เพศ ต่อจากส่วน OCR ที่ย้ายมารวมในหน้านี้)
+  let existing = { nationality: '', passportNo: '', sexM: false, sexF: false, g: '', h: '', k: '', l: '', m: false, n: '', o: '' };
   const targetRow = findRowBySeqCached(sheetId, 'SUMMARY', seq);
   if (targetRow !== -1) {
     const ss = SpreadsheetApp.openById(sheetId);
     const summarySheet = ss.getSheetByName('SUMMARY');
-    const rowValues = summarySheet.getRange(targetRow, 7, 1, 9).getValues()[0]; // คอลัมน์ G..O (7..15)
+    const rowValues = summarySheet.getRange(targetRow, 4, 1, 12).getValues()[0]; // คอลัมน์ D..O (4..15)
     existing = {
-      g: rowValues[0] || '', h: rowValues[1] || '',
-      k: rowValues[4] || '', l: rowValues[5] || '',
-      m: !!rowValues[6], n: rowValues[7] || '', o: rowValues[8] || ''
+      nationality: rowValues[0] || '', passportNo: rowValues[1] || '',
+      sexM: !!rowValues[5], sexF: !!rowValues[6],
+      g: rowValues[3] || '', h: rowValues[4] || '',
+      k: rowValues[7] || '', l: rowValues[8] || '',
+      m: !!rowValues[9], n: rowValues[10] || '', o: rowValues[11] || ''
     };
   }
 
@@ -1779,16 +1745,41 @@ function renderExtraInfoPage(e) {
       .field { padding: 12px; border-bottom: 1px solid #f0f0f0; }
       .field:last-child { border-bottom: none; }
       .field label { display: block; font-size: 13px; font-weight: 700; color: #555; margin-bottom: 6px; }
-      select, textarea { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px; background: #fafafa; }
+      select, textarea, input[type=text] { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px; background: #fafafa; box-sizing: border-box; }
       textarea { resize: vertical; min-height: 70px; font-family: inherit; }
       .checkbox-field { display: flex; align-items: center; gap: 8px; }
       .checkbox-field input { width: 20px; height: 20px; accent-color: #06c755; }
+      .sex-row { display: flex; gap: 20px; }
+      .section-title { padding: 12px 12px 0; font-size: 13px; font-weight: 700; color: #06c755; }
+      .btn-import { margin: 12px; width: calc(100% - 24px); padding: 10px; border-radius: 8px; border: 1px solid #06c755; background: #fff; color: #06c755; font-weight: 700; font-size: 14px; }
+      .btn-import:disabled { opacity: 0.6; }
+      .ocr-msg { margin: 0 12px 12px; font-size: 12px; color: #e74c3c; display: none; }
     </style>
     <header>
       📝 ข้อมูลเพิ่มเติม
       <small>SEQ ${escapeHtml(seq)} • ${escapeHtml(sheetName)}</small>
     </header>
     <div class="container" id="formView">
+      <div class="card">
+        <div class="section-title">🛂 ข้อมูลจาก OCR (Passport)</div>
+        <button type="button" class="btn-import" id="btnImportOcr">📥 นำเข้าข้อมูล OCR</button>
+        <div class="ocr-msg" id="ocrMsg"></div>
+        <div class="field">
+          <label>สัญชาติ (Nationality)</label>
+          <input type="text" id="nationality" value="${escapeHtml(existing.nationality)}" placeholder="เช่น THA">
+        </div>
+        <div class="field">
+          <label>เลขที่หนังสือเดินทาง (Passport No.)</label>
+          <input type="text" id="passportNo" value="${escapeHtml(existing.passportNo)}" placeholder="เช่น AA1234567">
+        </div>
+        <div class="field">
+          <label>เพศ (Sex)</label>
+          <div class="sex-row">
+            <label class="checkbox-field"><input type="checkbox" id="sexM" ${existing.sexM ? 'checked' : ''}><span>ชาย (M)</span></label>
+            <label class="checkbox-field"><input type="checkbox" id="sexF" ${existing.sexF ? 'checked' : ''}><span>หญิง (F)</span></label>
+          </div>
+        </div>
+      </div>
       <div class="card">
         ${buildSelect('groupOld', 'กลุ่มเดิม (6 กลุ่ม)', groupOldOptions, existing.g)}
         ${buildSelect('groupNew', 'กลุ่มใหม่ (10 กลุ่ม)', groupNewOptions, existing.h)}
@@ -1811,11 +1802,52 @@ function renderExtraInfoPage(e) {
     </div>
     <script>
       var BASE_URL = ${JSON.stringify(apiUrl)};
+
+      // เพศ M/F เลือกได้ทีละอันเท่านั้น (ทำ checkbox ให้พฤติกรรมเหมือน radio)
+      var sexM = document.getElementById('sexM');
+      var sexF = document.getElementById('sexF');
+      sexM.addEventListener('change', function () { if (sexM.checked) sexF.checked = false; });
+      sexF.addEventListener('change', function () { if (sexF.checked) sexM.checked = false; });
+
+      // ปุ่ม "นำเข้าข้อมูล OCR" — ดึงผลอ่าน Passport ล่าสุดมาเติมในฟอร์มที่แก้ไขได้ ไม่บันทึกอะไรจนกว่าจะกด "บันทึก"
+      document.getElementById('btnImportOcr').addEventListener('click', function () {
+        var btn = this;
+        var msgBox = document.getElementById('ocrMsg');
+        msgBox.style.display = 'none';
+        btn.disabled = true;
+        fetch(BASE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action: 'fetch_ocr_preview' })
+        }).then(function (r) { return r.json(); }).then(function (res) {
+          btn.disabled = false;
+          if (!res.success) {
+            msgBox.textContent = res.message || 'ดึงข้อมูล OCR ไม่สำเร็จ';
+            msgBox.style.display = 'block';
+            return;
+          }
+          if (res.nationality) document.getElementById('nationality').value = res.nationality;
+          if (res.passportNo) document.getElementById('passportNo').value = res.passportNo;
+          if (res.sex === 'M') { sexM.checked = true; sexF.checked = false; }
+          else if (res.sex === 'F') { sexF.checked = true; sexM.checked = false; }
+          // ข้อ 12: สัญชาติผู้ออกเล่ม (issuing country) กับสัญชาติผู้ถือไม่ตรงกัน — เตือนทันทีตอนกดนำเข้า
+          if (res.remark) alert('⚠️ ' + res.remark);
+        }).catch(function (err) {
+          btn.disabled = false;
+          msgBox.textContent = 'เกิดข้อผิดพลาด: ' + (err && err.message ? err.message : err);
+          msgBox.style.display = 'block';
+        });
+      });
+
       document.getElementById('btnSave').addEventListener('click', function () {
         var btn = document.getElementById('btnSave');
         btn.disabled = true;
         var payload = {
           action: 'save_summary_extra',
+          nationality: document.getElementById('nationality').value,
+          passportNo: document.getElementById('passportNo').value,
+          sexM: sexM.checked,
+          sexF: sexF.checked,
           groupOld: document.getElementById('groupOld').value,
           groupNew: document.getElementById('groupNew').value,
           visaNow: document.getElementById('visaNow').value,
@@ -1864,7 +1896,17 @@ function handleSaveSummaryExtra(e, body) {
 
     const ss = SpreadsheetApp.openById(sheetId);
     const summarySheet = ss.getSheetByName('SUMMARY');
+    const hasOcrEdits = !!(body.nationality || body.passportNo || body.sexM || body.sexF);
     withLock(() => {
+      if (body.nationality) summarySheet.getRange(targetRow, 4).setValue(body.nationality); // D
+      if (body.passportNo) summarySheet.getRange(targetRow, 5).setValue(body.passportNo);   // E
+      if (body.sexM) {
+        summarySheet.getRange(targetRow, 9).setValue(1);   // I
+        summarySheet.getRange(targetRow, 10).setValue(''); // J
+      } else if (body.sexF) {
+        summarySheet.getRange(targetRow, 9).setValue('');  // I
+        summarySheet.getRange(targetRow, 10).setValue(1);  // J
+      }
       summarySheet.getRange(targetRow, 7).setValue(body.groupOld || '');   // G
       summarySheet.getRange(targetRow, 8).setValue(body.groupNew || '');   // H
       summarySheet.getRange(targetRow, 11).setValue(body.visaNow || '');   // K
@@ -1874,8 +1916,33 @@ function handleSaveSummaryExtra(e, body) {
       summarySheet.getRange(targetRow, 15).setValue(body.note || '');      // O
     });
 
+    // ข้อ 12: ถ้ามีการกรอก/แก้ไขข้อมูล OCR ในรอบนี้ (ไม่ว่าจะกดปุ่ม "นำเข้าข้อมูล OCR" หรือพิมพ์เอง) ให้ทำสิ่งที่
+    // importOcrResult() เดิมเคยทำ: ผูก userProperties สำหรับขั้นตอนเลือกชื่อ regex/passporteye ตอนกด "จบงาน"
+    // และมาร์คแถวใน OCR_RESULTS ว่านำเข้าแล้ว (ขีดฆ่า + ImportStatus) ถ้ามีแถว OCR ที่อ่านเสร็จของ SEQ นี้อยู่
+    if (hasOcrEdits && uid) {
+      const ocrInfo = getOcrResultRowData(sheetId, seq);
+      if (ocrInfo.found && ocrInfo.status === 'done') {
+        const userProperties = PropertiesService.getUserProperties();
+        userProperties.setProperty(uid + '_PASSPORT_NO', body.passportNo || ocrInfo.passportNo || '');
+        userProperties.setProperty(uid + '_TEMP_ROW', targetRow.toString());
+        userProperties.setProperty(uid + '_NAME_REGEX', ocrInfo.regexName);
+        userProperties.setProperty(uid + '_NAME_PE', ocrInfo.peName);
+
+        const ocrSheet = ss.getSheetByName('OCR_RESULTS');
+        withLock(() => {
+          const fullRowRange = ocrSheet.getRange(ocrInfo.rowIndex, 1, 1, ocrSheet.getLastColumn());
+          fullRowRange.setFontLine('line-through');
+          ocrSheet.getRange(ocrInfo.rowIndex, 10).setValue('imported');
+        });
+      }
+    }
+
     if (uid) {
-      pushText(uid, `📝 บันทึกข้อมูลเพิ่มเติมของ SEQ ${seq} เรียบร้อยแล้วครับ`);
+      pushMessages(uid, [{
+        type: 'text',
+        text: `📝 บันทึกข้อมูลเพิ่มเติมของ SEQ ${seq} เรียบร้อยแล้วครับ\n\nกรุณาเลือกสิ่งที่จะทำถัดไป:`,
+        quickReply: { items: popupFollowUpQuickReplyItems() }
+      }]);
     }
 
     return jsonResponse({ success: true });
@@ -2408,6 +2475,7 @@ function parseQueryString(queryString) {
 
 | ครั้งที่ 11 | ข้อ 5-6: popup HTML จัดการรูปภาพ + ฟอร์มข้อมูลเพิ่มเติมให้ SUMMARY (แบบไม่ใช้ LIFF) | `Code.gs` (รายละเอียดด้านล่าง) | ดูรายละเอียดแยกตามข้อในตารางถัดไป |
 | ครั้งที่ 12 | บั๊กหลังทดลองใช้จริง: กดปุ่ม "เสร็จสิ้น"/"บันทึก" ในหน้า popup แล้วไม่มีอะไรเกิดขึ้นเลย, หน่วงเวลารับรูปสั้นเกินไป | `Code.gs` (`renderManagePhotosPage`, `renderExtraInfoPage`, `IMAGE_BATCH_DEBOUNCE_MS`) | ดูรายละเอียดด้านล่าง |
+| ครั้งที่ 13 | รวม "นำเข้าข้อมูล OCR" เข้ากับหน้า popup "ข้อมูลเพิ่มเติม" ให้แก้ไขค่าที่จะบันทึกได้เอง, เพศเป็น checkbox, alert เตือนสัญชาติไม่ตรงตอนกดนำเข้า, ขึ้น quick reply หลังบันทึก | `Code.gs` (รายละเอียดด้านล่าง) | ดูรายละเอียดด้านล่าง |
 
 **รายละเอียดครั้งที่ 11 (ต่อจากครั้งที่ 10 — ข้อ 5-6 ที่ตอนแรกวางแผนไว้ว่าจะใช้ LIFF):**
 
@@ -2437,3 +2505,23 @@ function parseQueryString(queryString) {
 - เปิดหน้า "จัดการรูปภาพ" เลือกประเภทให้ครบทุกรูป กด "เสร็จสิ้น" → ต้องขึ้นหน้าสำเร็จในหน้า popup เอง และแชท LINE ต้องได้ข้อความสรุปกลับมาจริง (ต้อง deploy เวอร์ชันใหม่ก่อนถึงจะเห็นผล เพราะเป็นการแก้ `Code.gs`)
 - เปิดหน้า "ข้อมูลเพิ่มเติม" กรอกแล้วกด "บันทึก" → ต้องขึ้นหน้าสำเร็จ และคอลัมน์ G,H,K,L,M,N,O ในแท็บ `SUMMARY` ต้องถูกเขียนจริง
 - ส่งรูปหลายใบห่างกันช้าๆ (3-4 วิ/รูป) → ควรได้รับข้อความ "รับรูปทั้งหมด" แค่ครั้งเดียวสรุปยอดรวม ไม่ตอบถี่ทีละรูป
+
+**รายละเอียดครั้งที่ 13 (feedback หลังทดลองใช้จริงต่อจากครั้งที่ 12):**
+
+⚠️ **เหตุผลที่รวม "นำเข้าข้อมูล" เข้ากับ "ข้อมูลเพิ่มเติม":** ฟังก์ชัน `importOcrResult()` เดิม (ทำงานผ่านปุ่ม quick reply "📥 นำเข้าข้อมูล" แยกต่างหาก) เขียนค่าสัญชาติ/เลขพาสปอร์ต/เพศจาก OCR ลง `SUMMARY` ทันทีแบบไม่ให้แก้ไข ถ้า OCR อ่านผิด (เช่น เลขพาสปอร์ตผิดตัว) ผู้ใช้ไม่มีทางแก้ก่อนบันทึก ต้องไปแก้ในชีตเองทีหลัง — จึงย้าย logic นี้มารวมเป็น **ส่วนแรกสุด** ของหน้า popup "ข้อมูลเพิ่มเติม" (ก่อนดรอปดาวน์กลุ่มเดิม/กลุ่มใหม่) ให้เป็นฟอร์มที่แก้ไขได้ก่อนกด "บันทึก" จริง ลดโอกาสข้อมูลผิดหลุดเข้า `SUMMARY`
+
+| ข้อ | Requirement | จุดที่แก้ |
+|---|---|---|
+| 12.1 | ย้าย "นำเข้าข้อมูล" มาเป็นส่วนแรกในหน้า popup "ข้อมูลเพิ่มเติม" ก่อนดรอปดาวน์กลุ่มเดิม โดยมีปุ่ม import OCR แยกต่างหาก และผู้ใช้แก้ไขค่าที่จะบันทึกได้เองก่อนกด "บันทึก" | ลบ `importOcrResult()`/`replyNoOcrDataYet()` ทิ้ง (ย้าย logic ไปรวมกับ `handleSaveSummaryExtra`) เพิ่ม `getOcrResultRowData(sheetId, seq)` อ่านแถว `OCR_RESULTS` แบบดิบๆ ใช้ร่วมกัน 2 จุด และ `doPost` action ใหม่ `fetch_ocr_preview` (`handleFetchOcrPreview`) คืนค่าดิบให้หน้าเว็บ **โดยไม่เขียนอะไรลงชีตเลย**; `renderExtraInfoPage` เพิ่มการ์ดแรก "🛂 ข้อมูลจาก OCR (Passport)" มีปุ่ม "📥 นำเข้าข้อมูล OCR" + ช่องกรอกสัญชาติ/เลขพาสปอร์ตที่แก้ไขได้ (pre-fill จากค่าที่เคยบันทึกไว้ใน `SUMMARY` คอลัมน์ D/E ถ้ามี) กดปุ่มแล้ว fetch `fetch_ocr_preview` มาเติมในช่องให้แก้ต่อได้ ไม่ auto-save; ปุ่ม "นำเข้าข้อมูล" แบบ quick reply เดี่ยวๆ (`action=import_ocr`) ถูกลบออกจากเมนูรวม `buildSeqActionQuickReplyItems()` — ถ้ามี quick reply เก่าที่ยังค้างแสดงอยู่ในแชทของผู้ใช้ถูกกด จะ redirect มาเปิดหน้า popup เดียวกันนี้แทนผ่าน `sendExtraInfoFormLink()` (ใช้ร่วมกับปุ่ม "📝 ข้อมูลเพิ่มเติม" ปกติ) |
+| 12.2 | ส่วนเพศ แสดงเป็น checkbox แทน (เดิมเลือกอัตโนมัติจากค่า OCR อย่างเดียว) โดยเพศชายกรอกคอลัมน์ I เพศหญิงกรอกคอลัมน์ J | เพิ่ม checkbox คู่ `sexM`/`sexF` ในการ์ด OCR ของ `renderExtraInfoPage` (ทำ JS ให้เลือกได้ทีละอันเหมือน radio) pre-fill จาก `SUMMARY` คอลัมน์ I/J เดิม; `handleSaveSummaryExtra` เขียน I=1,J='' ถ้าติ๊ก `sexM`, หรือ I='',J=1 ถ้าติ๊ก `sexF` |
+| 12.3 | ถ้าสัญชาติที่ออกหนังสือกับสัญชาติผู้ถือต่างกัน (nationality mismatch) ให้แจ้งเป็น alert ตอนกดปุ่มนำเข้า | `handleFetchOcrPreview` คืนค่า `remark` (ข้อความ mismatch จาก `app.py`) กลับไปด้วยเสมอถ้ามี ฝั่งหน้าเว็บเรียก `alert('⚠️ ' + res.remark)` ทันทีหลัง fetch สำเร็จตอนกดปุ่ม "นำเข้าข้อมูล OCR" |
+| 12.4 | เมื่อบันทึกข้อมูลเพิ่มเติมเรียบร้อย ให้ขึ้น quick reply [จอง SEQ, เลือก SEQ, สิ้นสุด] | `handleSaveSummaryExtra` เปลี่ยนจาก `pushText()` ธรรมดา เป็น `pushMessages()` แนบ `quickReply: { items: popupFollowUpQuickReplyItems() }` (ฟังก์ชันเดียวกับที่ใช้หลังจัดการรูปภาพเสร็จในข้อ 5) |
+| — | รักษาขั้นตอนเลือกชื่อ regex/passporteye ตอนกด "🏁 จบงาน" ให้ยังทำงานได้ (เดิมพึ่งพา `userProperties` ที่ `importOcrResult()` เคยตั้งไว้) | `handleSaveSummaryExtra` เมื่อมีการกรอก/แก้ไขข้อมูล OCR ในรอบนั้น (สัญชาติ/เลขพาสปอร์ต/เพศ ไม่ว่างอย่างน้อย 1 อย่าง) และพบแถว `OCR_RESULTS` สถานะ `done` ของ SEQ นี้ จะตั้ง `userProperties` (`_PASSPORT_NO`, `_TEMP_ROW`, `_NAME_REGEX`, `_NAME_PE`) และมาร์คแถว `OCR_RESULTS` เป็น `imported` (ขีดฆ่า) ให้เหมือนพฤติกรรมเดิมทุกประการ |
+
+**ทดสอบข้อ 12.1-12.4:**
+- ถ่ายรูป Passport ให้ OCR ประมวลผลเสร็จ (สถานะ `done` ใน `OCR_RESULTS`) → เปิดหน้า "ข้อมูลเพิ่มเติม" → กด "📥 นำเข้าข้อมูล OCR" → ช่องสัญชาติ/เลขพาสปอร์ต และ checkbox เพศ ต้องเติมค่าจาก OCR ให้อัตโนมัติ (ยังไม่บันทึกอะไรลงชีตจนกว่าจะกด "บันทึก")
+- แก้เลขพาสปอร์ตในช่องให้ต่างจากที่ OCR อ่านได้ก่อนกด "บันทึก" → เปิดชีตดู `SUMMARY` คอลัมน์ E ต้องเป็นค่าที่แก้ไขแล้ว ไม่ใช่ค่าดิบจาก OCR
+- ทดสอบกับ SEQ ที่สัญชาติผู้ออกเล่มกับสัญชาติผู้ถือไม่ตรงกัน (nationality mismatch) → กด "นำเข้าข้อมูล OCR" ต้องเห็น alert เตือนทันที
+- กด "บันทึก" แล้วต้องเห็นข้อความยืนยันกลับมาที่แชท พร้อม quick reply [📌 จอง SEQ][🔢 เลือก SEQ][🏁 สิ้นสุดแผ่นงาน]
+- ทำขั้นตอนนำเข้า OCR + บันทึกเสร็จแล้ว กด "🏁 จบงาน" → ต้องเข้าสู่หน้าเลือกชื่อ Regex/PassportEye ได้ปกติเหมือนก่อนแก้ (ทดสอบว่า userProperties ยังถูกตั้งถูกต้อง)
+- กด SEQ ที่ยังไม่มีผล OCR (หรือ OCR ยัง `queued`/`error`) แล้วกด "นำเข้าข้อมูล OCR" ในหน้า popup → ต้องเห็นข้อความแจ้งสถานะ (ไม่ใช่ค้างเงียบ) แต่ยังกรอกช่องสัญชาติ/เลขพาสปอร์ตเองมือแล้วกด "บันทึก" ได้ตามปกติ
