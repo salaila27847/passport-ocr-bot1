@@ -542,7 +542,7 @@ function withLock(fn) {
 // BOOKED SEQ TRACKING (ต่อ userName — ใช้โชว์รายการ SEQ ที่จองไว้แต่ยังไม่จบงาน)
 // ==========================================
 // เก็บแยกจากคอลัมน์ E ของ SUMMARY เพราะคอลัมน์ E ถูก handleSaveSummaryExtra() เขียนทับด้วยเลข Passport
-// หลัง OCR สำเร็จ ทำให้ข้อความ "จองโดย {userName}" หายไปก่อนงานจะจบจริง (ก่อนกด "จบงาน")
+// หลัง OCR สำเร็จ ทำให้ข้อความ "จองโดย {userName}" หายไปก่อนงานจะจบจริง (ก่อนกด "จบ SEQ")
 function bookedSeqPropertyKey(sheetId, userName) {
   return `BOOKED_${sheetId}_${userName}`;
 }
@@ -808,15 +808,9 @@ function handleEvent(event) {
       return;
     }
 
-    // จบงาน / สรุปข้อมูล
+    // ข้อ 14: จบ SEQ นี้ — ไม่ต้องรอผล OCR อีกต่อไป (ชื่อ-นามสกุล/ข้อมูล OCR กรอก/แก้ไขผ่านหน้า "ข้อมูลเพิ่มเติม" แยกอยู่แล้ว)
     if (data.action === 'finish_case') {
-      showSummaryAndNameOptions(event, userId);
-      return;
-    }
-
-    // ยืนยันการเลือกชื่อ
-    if (data.action === 'confirm_name_selection') {
-      saveFinalNameAndComplete(event, userId, data.choice);
+      finishSeqCase(event, userId);
       return;
     }
 
@@ -1011,7 +1005,7 @@ function removeFromPendingQueue(userId, seq, fileId) {
   return queue;
 }
 
-// ล้างคิว/ตัวนับ pending ของ SEQ หนึ่งๆ ทิ้งทั้งหมด (เรียกตอนกด "จบงาน" สำเร็จ - ข้อ 3.7)
+// ล้างคิว/ตัวนับ pending ของ SEQ หนึ่งๆ ทิ้งทั้งหมด (เรียกตอนกด "จบ SEQ" สำเร็จ - ข้อ 3.7)
 function clearPendingQueueState(userId, seq) {
   if (!seq) return;
   const userProperties = PropertiesService.getUserProperties();
@@ -1026,7 +1020,7 @@ function buildSeqActionQuickReplyItems(seq) {
     { type: 'action', action: { type: 'postback', label: '🗂️ จัดการรูปภาพ', data: 'action=manage_photos', displayText: 'จัดการรูปภาพ' } },
     // ข้อ 12: "นำเข้าข้อมูล" ถูกรวมเข้ากับ "ข้อมูลเพิ่มเติม" แล้ว (เป็นส่วนแรกในหน้า popup เดียวกัน) ไม่ต้องมีปุ่มแยกอีกต่อไป
     { type: 'action', action: { type: 'postback', label: '📝 ข้อมูลเพิ่มเติม', data: 'action=extra_info_form', displayText: 'ข้อมูลเพิ่มเติม' } },
-    { type: 'action', action: { type: 'postback', label: '🏁 จบงาน', data: 'action=finish_case', displayText: 'จบงาน' } },
+    { type: 'action', action: { type: 'postback', label: '🏁 จบ SEQ', data: 'action=finish_case', displayText: 'จบ SEQ' } },
     { type: 'action', action: { type: 'postback', label: '📌 จอง SEQ', data: 'action=book_seq', displayText: 'จองSEQ' } },
     { type: 'action', action: { type: 'postback', label: '🔢 เลือก SEQ', data: 'action=menu_select_seq', displayText: 'เลือกSEQ' } }
   ];
@@ -1155,6 +1149,18 @@ function popupFollowUpQuickReplyItems() {
   return [
     { type: 'action', action: { type: 'postback', label: '📌 จอง SEQ', data: 'action=book_seq', displayText: 'จองSEQ' } },
     { type: 'action', action: { type: 'postback', label: '🔢 เลือก SEQ', data: 'action=menu_select_seq', displayText: 'เลือกSEQ' } },
+    { type: 'action', action: { type: 'postback', label: '🏁 สิ้นสุดแผ่นงาน', data: 'action=menu_end', displayText: 'สิ้นสุดแผ่นงาน' } }
+  ];
+}
+
+// ข้อ 14 (ข้อย่อย 2.1): เหมือน popupFollowUpQuickReplyItems() แต่แทรก "จบ SEQ" เข้าไปด้วย — ใช้เฉพาะหลังบันทึก
+// "ข้อมูลเพิ่มเติม" เพราะขั้นตอนถัดไปที่เป็นไปได้สูงคือกดจบ SEQ นี้เลย (ไม่ใช้ตัวนี้ใน finishSeqCase เอง กันโชว์ปุ่ม
+// "จบ SEQ" ซ้ำทันทีหลังจบไปแล้ว)
+function extraInfoSavedQuickReplyItems() {
+  return [
+    { type: 'action', action: { type: 'postback', label: '📌 จอง SEQ', data: 'action=book_seq', displayText: 'จองSEQ' } },
+    { type: 'action', action: { type: 'postback', label: '🔢 เลือก SEQ', data: 'action=menu_select_seq', displayText: 'เลือกSEQ' } },
+    { type: 'action', action: { type: 'postback', label: '🏁 จบ SEQ', data: 'action=finish_case', displayText: 'จบ SEQ' } },
     { type: 'action', action: { type: 'postback', label: '🏁 สิ้นสุดแผ่นงาน', data: 'action=menu_end', displayText: 'สิ้นสุดแผ่นงาน' } }
   ];
 }
@@ -1562,6 +1568,8 @@ function handleFetchOcrPreview(e) {
       nationality: info.nationality,
       passportNo: info.passportNo,
       sex: info.sex,
+      regexName: info.regexName,
+      peName: info.peName,
       remark: info.remark // ข้อ 5.2: nationality_mismatch — หน้าเว็บจะ alert() ข้อความนี้ทันทีที่กดนำเข้า
     });
   } catch (err) {
@@ -1570,109 +1578,32 @@ function handleFetchOcrPreview(e) {
   }
 }
 
-function showSummaryAndNameOptions(event, userId) {
-  const userProperties = PropertiesService.getUserProperties();
-  const regexName = userProperties.getProperty(userId + '_NAME_REGEX') || 'ไม่สามารถสกัดได้';
-  const peName = userProperties.getProperty(userId + '_NAME_PE') || 'ไม่สามารถสกัดได้';
-
-  const flexMessage = {
-    "type": "flex",
-    "altText": "สรุปข้อมูลและเลือกชื่อ-นามสกุล",
-    "contents": {
-      "type": "bubble",
-      "body": {
-        "type": "box",
-        "layout": "vertical",
-        "contents": [
-          { "type": "text", "text": "📋 สรุปผลการอ่านชื่อ-นามสกุล", "weight": "bold", "size": "md", "color": "#1DB446" },
-          { "type": "text", "text": "กรุณาเลือกรูปแบบชื่อที่ถูกต้องเพื่อลงตาราง:", "size": "xs", "color": "#888888", "margin": "xs" },
-          { "type": "separator", "margin": "md" },
-          {
-            "type": "box",
-            "layout": "vertical",
-            "margin": "md",
-            "spacing": "sm",
-            "contents": [
-              {
-                "type": "button",
-                "style": "primary",
-                "height": "sm",
-                "action": {
-                  "type": "postback",
-                  "label": `1. Regex: ${regexName.substring(0, 20)}`,
-                  "data": `action=confirm_name_selection&choice=REGEX`,
-                  "displayText": `เลือกชื่อ: ${regexName}`
-                }
-              },
-              {
-                "type": "button",
-                "style": "secondary",
-                "height": "sm",
-                "action": {
-                  "type": "postback",
-                  "label": `2. PassportEye: ${peName.substring(0, 20)}`,
-                  "data": `action=confirm_name_selection&choice=PE`,
-                  "displayText": `เลือกชื่อ: ${peName}`
-                }
-              },
-              {
-                "type": "button",
-                "style": "link",
-                "color": "#888888",
-                "action": {
-                  "type": "postback",
-                  "label": "3. ไม่เลือก (เว้นว่างไว้)",
-                  "data": `action=confirm_name_selection&choice=NONE`,
-                  "displayText": "ไม่เลือกชื่อ (เว้นว่าง)"
-                }
-              }
-            ]
-          }
-        ]
-      }
-    }
-  };
-
-  sendLineReply(event.replyToken, [flexMessage]);
-}
-
-function saveFinalNameAndComplete(event, userId, choice) {
+// ข้อ 14: จบ SEQ นี้ — เปลี่ยนจาก "จบงาน" (ที่เดิมรอผล OCR แล้วให้เลือกชื่อ regex/passporteye ก่อนถึงจะจบได้)
+// เป็นแค่ปิดเคสตรงๆ ไม่ต้องพึ่ง OCR อีกต่อไป เพราะชื่อ-นามสกุล/ข้อมูล OCR กรอกและแก้ไขผ่านหน้า "ข้อมูลเพิ่มเติม" แยกไปแล้ว (ข้อ 12/14)
+function finishSeqCase(event, userId) {
   const userProperties = PropertiesService.getUserProperties();
   const sheetId = userProperties.getProperty(userId + '_sheetId');
-  const targetRowStr = userProperties.getProperty(userId + '_TEMP_ROW');
+  const seq = userProperties.getProperty(userId + '_seq');
 
-  if (sheetId && targetRowStr) {
-    const ss = SpreadsheetApp.openById(sheetId);
-    const summarySheet = ss.getSheetByName('SUMMARY');
-    const targetRow = parseInt(targetRowStr, 10);
-
-    let finalName = "";
-    if (choice === 'REGEX') {
-      finalName = userProperties.getProperty(userId + '_NAME_REGEX') || "";
-    } else if (choice === 'PE') {
-      finalName = userProperties.getProperty(userId + '_NAME_PE') || "";
-    }
-
-    if (finalName) {
-      summarySheet.getRange(targetRow, 6).setValue(finalName);
-    }
+  if (!seq) {
+    replyText(event.replyToken, '⚠️ ยังไม่ได้กำหนด SEQ ครับ กรุณาพิมพ์หมายเลข SEQ ก่อน');
+    return;
   }
-
-  userProperties.deleteProperty(userId + '_TEMP_ROW');
-  userProperties.deleteProperty(userId + '_NAME_REGEX');
-  userProperties.deleteProperty(userId + '_NAME_PE');
 
   // ข้อ 3.7: ล้างคิว/ตัวนับรูป pending ของ SEQ นี้ทิ้ง เพื่อไม่ให้ปนกับ SEQ ใหม่รอบถัดไป
-  const finishedSeq = userProperties.getProperty(userId + '_seq');
-  clearPendingQueueState(userId, finishedSeq);
+  clearPendingQueueState(userId, seq);
 
-  // ข้อ 1: SEQ นี้จบงานแล้ว เอาออกจากรายการ "SEQ ที่จองไว้แต่ยังไม่จบงาน" ของผู้ใช้คนนี้
-  if (sheetId && finishedSeq) {
+  // ข้อ 1: SEQ นี้จบแล้ว เอาออกจากรายการ "SEQ ที่จองไว้แต่ยังไม่จบงาน" ของผู้ใช้คนนี้
+  if (sheetId) {
     const userNameForList = getLineUserProfile(userId);
-    removeBookedSeq(sheetId, userNameForList, finishedSeq);
+    removeBookedSeq(sheetId, userNameForList, seq);
   }
 
-  sendTaskCompletionQuickReply(event.replyToken);
+  sendLineReply(event.replyToken, [{
+    type: 'text',
+    text: `🏁 SEQ ${seq} ดำเนินการเสร็จสิ้นแล้ว กรุณาเลือก`,
+    quickReply: { items: popupFollowUpQuickReplyItems() }
+  }]);
 }
 
 // ==========================================
@@ -1709,21 +1640,23 @@ function renderExtraInfoPage(e) {
   const visaOptions = getColumnValuesForDropdown(sheetId, 'VISA', 'M');
   const clauseOptions = getColumnValuesForDropdown(sheetId, 'CLAUSE', 'A');
 
-  // ข้อ 12: อ่านคอลัมน์ D..O รวดเดียว (D=สัญชาติ, E=เลขพาสปอร์ต, I/J=เพศ ต่อจากส่วน OCR ที่ย้ายมารวมในหน้านี้)
-  let existing = { nationality: '', passportNo: '', sexM: false, sexF: false, g: '', h: '', k: '', l: '', m: false, n: '', o: '' };
+  // ข้อ 12/14: อ่านคอลัมน์ D..O รวดเดียว (D=สัญชาติ, E=เลขพาสปอร์ต, F=ชื่อ-นามสกุล, I/J=เพศ ต่อจากส่วน OCR ที่ย้ายมารวมในหน้านี้)
+  let existing = { nationality: '', passportNo: '', name: '', sexM: false, sexF: false, g: '', h: '', k: '', l: '', m: false, n: '', o: '' };
   const targetRow = findRowBySeqCached(sheetId, 'SUMMARY', seq);
   if (targetRow !== -1) {
     const ss = SpreadsheetApp.openById(sheetId);
     const summarySheet = ss.getSheetByName('SUMMARY');
     const rowValues = summarySheet.getRange(targetRow, 4, 1, 12).getValues()[0]; // คอลัมน์ D..O (4..15)
     existing = {
-      nationality: rowValues[0] || '', passportNo: rowValues[1] || '',
+      nationality: rowValues[0] || '', passportNo: rowValues[1] || '', name: rowValues[2] || '',
       sexM: !!rowValues[5], sexF: !!rowValues[6],
       g: rowValues[3] || '', h: rowValues[4] || '',
       k: rowValues[7] || '', l: rowValues[8] || '',
       m: !!rowValues[9], n: rowValues[10] || '', o: rowValues[11] || ''
     };
   }
+  // ข้อ 14: รูป PASSPORT ที่เคยจัดประเภทไว้แล้ว (ถ้ามี) โชว์ใต้ปุ่มนำเข้า OCR ให้เทียบกับค่าที่อ่านได้ก่อนบันทึก
+  const passportPhotoUrl = getPassportPhotoUrl(sheetName, seq);
 
   function buildSelect(id, label, options, selected) {
     const optionsHtml = options.map(opt =>
@@ -1754,6 +1687,10 @@ function renderExtraInfoPage(e) {
       .btn-import { margin: 12px; width: calc(100% - 24px); padding: 10px; border-radius: 8px; border: 1px solid #06c755; background: #fff; color: #06c755; font-weight: 700; font-size: 14px; }
       .btn-import:disabled { opacity: 0.6; }
       .ocr-msg { margin: 0 12px 12px; font-size: 12px; color: #e74c3c; display: none; }
+      .passport-photo-wrap { margin: 0 12px 12px; text-align: center; }
+      .passport-photo-wrap img { max-width: 100%; max-height: 220px; border-radius: 10px; border: 1px solid #eee; }
+      .passport-photo-wrap .no-photo { font-size: 12px; color: #999; padding: 20px 0; background: #fafafa; border-radius: 10px; }
+      .name-hint { margin: -6px 12px 12px; font-size: 12px; color: #888; display: none; }
     </style>
     <header>
       📝 ข้อมูลเพิ่มเติม
@@ -1764,6 +1701,11 @@ function renderExtraInfoPage(e) {
         <div class="section-title">🛂 ข้อมูลจาก OCR (Passport)</div>
         <button type="button" class="btn-import" id="btnImportOcr">📥 นำเข้าข้อมูล OCR</button>
         <div class="ocr-msg" id="ocrMsg"></div>
+        <div class="passport-photo-wrap">
+          ${passportPhotoUrl
+            ? `<img src="${escapeHtml(passportPhotoUrl)}" alt="รูป Passport SEQ ${escapeHtml(seq)}">`
+            : `<div class="no-photo">ยังไม่มีรูป Passport ที่จัดประเภทไว้สำหรับ SEQ นี้</div>`}
+        </div>
         <div class="field">
           <label>สัญชาติ (Nationality)</label>
           <input type="text" id="nationality" value="${escapeHtml(existing.nationality)}" placeholder="เช่น THA">
@@ -1772,6 +1714,11 @@ function renderExtraInfoPage(e) {
           <label>เลขที่หนังสือเดินทาง (Passport No.)</label>
           <input type="text" id="passportNo" value="${escapeHtml(existing.passportNo)}" placeholder="เช่น AA1234567">
         </div>
+        <div class="field">
+          <label>ชื่อ-นามสกุล (Name)</label>
+          <input type="text" id="name" value="${escapeHtml(existing.name)}" placeholder="เช่น MISS SOMYING SOMSRI">
+        </div>
+        <div class="name-hint" id="nameHint"></div>
         <div class="field">
           <label>เพศ (Sex)</label>
           <div class="sex-row">
@@ -1830,6 +1777,13 @@ function renderExtraInfoPage(e) {
           if (res.passportNo) document.getElementById('passportNo').value = res.passportNo;
           if (res.sex === 'M') { sexM.checked = true; sexF.checked = false; }
           else if (res.sex === 'F') { sexF.checked = true; sexM.checked = false; }
+          // ข้อ 14: เติมชื่อให้อัตโนมัติจาก regex ก่อน (ถ้าไม่มีลอง passporteye) แต่ยังโชว์ทั้งคู่ไว้เทียบ เพราะ OCR อาจอ่านผิดได้ทั้งสองแบบ
+          if (res.regexName || res.peName) {
+            document.getElementById('name').value = res.regexName || res.peName || document.getElementById('name').value;
+            var hint = document.getElementById('nameHint');
+            hint.textContent = 'OCR อ่านได้ — Regex: ' + (res.regexName || '-') + ' | PassportEye: ' + (res.peName || '-');
+            hint.style.display = 'block';
+          }
           // ข้อ 12: สัญชาติผู้ออกเล่ม (issuing country) กับสัญชาติผู้ถือไม่ตรงกัน — เตือนทันทีตอนกดนำเข้า
           if (res.remark) alert('⚠️ ' + res.remark);
         }).catch(function (err) {
@@ -1846,6 +1800,7 @@ function renderExtraInfoPage(e) {
           action: 'save_summary_extra',
           nationality: document.getElementById('nationality').value,
           passportNo: document.getElementById('passportNo').value,
+          name: document.getElementById('name').value,
           sexM: sexM.checked,
           sexF: sexF.checked,
           groupOld: document.getElementById('groupOld').value,
@@ -1896,10 +1851,11 @@ function handleSaveSummaryExtra(e, body) {
 
     const ss = SpreadsheetApp.openById(sheetId);
     const summarySheet = ss.getSheetByName('SUMMARY');
-    const hasOcrEdits = !!(body.nationality || body.passportNo || body.sexM || body.sexF);
+    const hasOcrEdits = !!(body.nationality || body.passportNo || body.name || body.sexM || body.sexF);
     withLock(() => {
       if (body.nationality) summarySheet.getRange(targetRow, 4).setValue(body.nationality); // D
       if (body.passportNo) summarySheet.getRange(targetRow, 5).setValue(body.passportNo);   // E
+      if (body.name) summarySheet.getRange(targetRow, 6).setValue(body.name);               // F
       if (body.sexM) {
         summarySheet.getRange(targetRow, 9).setValue(1);   // I
         summarySheet.getRange(targetRow, 10).setValue(''); // J
@@ -1916,18 +1872,12 @@ function handleSaveSummaryExtra(e, body) {
       summarySheet.getRange(targetRow, 15).setValue(body.note || '');      // O
     });
 
-    // ข้อ 12: ถ้ามีการกรอก/แก้ไขข้อมูล OCR ในรอบนี้ (ไม่ว่าจะกดปุ่ม "นำเข้าข้อมูล OCR" หรือพิมพ์เอง) ให้ทำสิ่งที่
-    // importOcrResult() เดิมเคยทำ: ผูก userProperties สำหรับขั้นตอนเลือกชื่อ regex/passporteye ตอนกด "จบงาน"
-    // และมาร์คแถวใน OCR_RESULTS ว่านำเข้าแล้ว (ขีดฆ่า + ImportStatus) ถ้ามีแถว OCR ที่อ่านเสร็จของ SEQ นี้อยู่
-    if (hasOcrEdits && uid) {
+    // ข้อ 12/14: ถ้ามีการกรอก/แก้ไขข้อมูล OCR ในรอบนี้ (ไม่ว่าจะกดปุ่ม "นำเข้าข้อมูล OCR" หรือพิมพ์เอง)
+    // มาร์คแถวใน OCR_RESULTS ว่านำเข้าแล้ว (ขีดฆ่า + ImportStatus) ถ้ามีแถว OCR ที่อ่านเสร็จของ SEQ นี้อยู่ — ไว้ดูสถานะย้อนหลังเฉยๆ
+    // (ไม่ต้องผูก userProperties ให้ขั้นตอนเลือกชื่อ regex/passporteye อีกต่อไป เพราะ "จบ SEQ" เลิกพึ่งพา OCR แล้ว — ข้อ 14)
+    if (hasOcrEdits) {
       const ocrInfo = getOcrResultRowData(sheetId, seq);
       if (ocrInfo.found && ocrInfo.status === 'done') {
-        const userProperties = PropertiesService.getUserProperties();
-        userProperties.setProperty(uid + '_PASSPORT_NO', body.passportNo || ocrInfo.passportNo || '');
-        userProperties.setProperty(uid + '_TEMP_ROW', targetRow.toString());
-        userProperties.setProperty(uid + '_NAME_REGEX', ocrInfo.regexName);
-        userProperties.setProperty(uid + '_NAME_PE', ocrInfo.peName);
-
         const ocrSheet = ss.getSheetByName('OCR_RESULTS');
         withLock(() => {
           const fullRowRange = ocrSheet.getRange(ocrInfo.rowIndex, 1, 1, ocrSheet.getLastColumn());
@@ -1941,7 +1891,7 @@ function handleSaveSummaryExtra(e, body) {
       pushMessages(uid, [{
         type: 'text',
         text: `📝 บันทึกข้อมูลเพิ่มเติมของ SEQ ${seq} เรียบร้อยแล้วครับ\n\nกรุณาเลือกสิ่งที่จะทำถัดไป:`,
-        quickReply: { items: popupFollowUpQuickReplyItems() }
+        quickReply: { items: extraInfoSavedQuickReplyItems() }
       }]);
     }
 
@@ -1950,45 +1900,6 @@ function handleSaveSummaryExtra(e, body) {
     debugLog('handleSaveSummaryExtra error: ' + err);
     return jsonResponse({ success: false, error: err.message });
   }
-}
-
-function sendTaskCompletionQuickReply(replyToken) {
-  const message = {
-    "type": "text",
-    "text": "✅ บันทึกข้อมูลและจัดเก็บไฟล์เรียบร้อยแล้วครับ!\n----------------------------------\n👇 เลือกรายการที่ต้องการทำต่อได้เลยครับ:",
-    "quickReply": {
-      "items": [
-        {
-          "type": "action",
-          "action": {
-            "type": "postback",
-            "label": "📸 เลือก SEQ",
-            "data": "action=menu_select_seq",
-            "displayText": "เลือก SEQ เคสถัดไป"
-          }
-        },
-        {
-          "type": "action",
-          "action": {
-            "type": "postback",
-            "label": "📌 จอง SEQ",
-            "data": "action=menu_reserve_seq",
-            "displayText": "จอง SEQ"
-          }
-        },
-        {
-          "type": "action",
-          "action": {
-            "type": "postback",
-            "label": "🏁 สิ้นสุด",
-            "data": "action=menu_end",
-            "displayText": "สิ้นสุดการทำงาน"
-          }
-        }
-      ]
-    }
-  };
-  sendLineReply(replyToken, [message]);
 }
 
 // ==========================================
@@ -2178,6 +2089,21 @@ function getOrCreatePhotoFolder(mainFolderName, sheetName) {
   let photoFolder = photoFolders.hasNext() ? photoFolders.next() : mainFolder.createFolder('PHOTO');
   const subFolders = photoFolder.getFoldersByName(sheetName);
   return subFolders.hasNext() ? subFolders.next() : photoFolder.createFolder(sheetName);
+}
+
+// ข้อ 14: หารูป PASSPORT ที่เคยจัดประเภทไว้แล้วของ SEQ นี้ (จากชื่อไฟล์ตามคอนเวนชันของ classifyAndSavePhoto)
+// เพื่อโชว์ใต้ปุ่ม "นำเข้าข้อมูล OCR" ในหน้า popup ข้อมูลเพิ่มเติม ให้เทียบรูปกับค่าที่อ่านได้ก่อนบันทึกจริง
+function getPassportPhotoUrl(sheetName, seq) {
+  try {
+    const folder = getOrCreatePhotoFolder(MAIN_FOLDER_NAME, sheetName);
+    const fileName = `${seq}_${PHOTO_TYPE_FILE_LABELS['PASSPORT']}_${sheetName}.jpg`;
+    const files = folder.getFilesByName(fileName);
+    if (!files.hasNext()) return '';
+    return `https://drive.google.com/thumbnail?id=${files.next().getId()}&sz=w1000`;
+  } catch (err) {
+    debugLog('getPassportPhotoUrl error: ' + err);
+    return '';
+  }
 }
 
 function deleteExistingDriveFile(folder, fileName) {
@@ -2476,6 +2402,7 @@ function parseQueryString(queryString) {
 | ครั้งที่ 11 | ข้อ 5-6: popup HTML จัดการรูปภาพ + ฟอร์มข้อมูลเพิ่มเติมให้ SUMMARY (แบบไม่ใช้ LIFF) | `Code.gs` (รายละเอียดด้านล่าง) | ดูรายละเอียดแยกตามข้อในตารางถัดไป |
 | ครั้งที่ 12 | บั๊กหลังทดลองใช้จริง: กดปุ่ม "เสร็จสิ้น"/"บันทึก" ในหน้า popup แล้วไม่มีอะไรเกิดขึ้นเลย, หน่วงเวลารับรูปสั้นเกินไป | `Code.gs` (`renderManagePhotosPage`, `renderExtraInfoPage`, `IMAGE_BATCH_DEBOUNCE_MS`) | ดูรายละเอียดด้านล่าง |
 | ครั้งที่ 13 | รวม "นำเข้าข้อมูล OCR" เข้ากับหน้า popup "ข้อมูลเพิ่มเติม" ให้แก้ไขค่าที่จะบันทึกได้เอง, เพศเป็น checkbox, alert เตือนสัญชาติไม่ตรงตอนกดนำเข้า, ขึ้น quick reply หลังบันทึก | `Code.gs` (รายละเอียดด้านล่าง) | ดูรายละเอียดด้านล่าง |
+| ครั้งที่ 14 | เพิ่มรูป Passport + ช่องชื่อ-นามสกุลในหน้า "ข้อมูลเพิ่มเติม", เพิ่มปุ่ม "จบ SEQ" ในปุ่ม quick reply หลังบันทึก, เปลี่ยน "จบงาน" เป็น "จบ SEQ" ไม่ต้องรอ OCR อีกต่อไป | `Code.gs` (รายละเอียดด้านล่าง) | ดูรายละเอียดด้านล่าง |
 
 **รายละเอียดครั้งที่ 11 (ต่อจากครั้งที่ 10 — ข้อ 5-6 ที่ตอนแรกวางแผนไว้ว่าจะใช้ LIFF):**
 
@@ -2523,5 +2450,24 @@ function parseQueryString(queryString) {
 - แก้เลขพาสปอร์ตในช่องให้ต่างจากที่ OCR อ่านได้ก่อนกด "บันทึก" → เปิดชีตดู `SUMMARY` คอลัมน์ E ต้องเป็นค่าที่แก้ไขแล้ว ไม่ใช่ค่าดิบจาก OCR
 - ทดสอบกับ SEQ ที่สัญชาติผู้ออกเล่มกับสัญชาติผู้ถือไม่ตรงกัน (nationality mismatch) → กด "นำเข้าข้อมูล OCR" ต้องเห็น alert เตือนทันที
 - กด "บันทึก" แล้วต้องเห็นข้อความยืนยันกลับมาที่แชท พร้อม quick reply [📌 จอง SEQ][🔢 เลือก SEQ][🏁 สิ้นสุดแผ่นงาน]
-- ทำขั้นตอนนำเข้า OCR + บันทึกเสร็จแล้ว กด "🏁 จบงาน" → ต้องเข้าสู่หน้าเลือกชื่อ Regex/PassportEye ได้ปกติเหมือนก่อนแก้ (ทดสอบว่า userProperties ยังถูกตั้งถูกต้อง)
 - กด SEQ ที่ยังไม่มีผล OCR (หรือ OCR ยัง `queued`/`error`) แล้วกด "นำเข้าข้อมูล OCR" ในหน้า popup → ต้องเห็นข้อความแจ้งสถานะ (ไม่ใช่ค้างเงียบ) แต่ยังกรอกช่องสัญชาติ/เลขพาสปอร์ตเองมือแล้วกด "บันทึก" ได้ตามปกติ
+
+⚠️ **หมายเหตุ (แก้ในครั้งที่ 14):** บรรทัดทดสอบเดิมที่นี่เคยบอกให้กด "🏁 จบงาน" แล้วตรวจดูหน้าเลือกชื่อ Regex/PassportEye — พฤติกรรมนั้นถูกแทนที่แล้ว ดูข้อ 14 ด้านล่าง (ปุ่มเปลี่ยนชื่อเป็น "จบ SEQ" และไม่มีหน้าเลือกชื่ออีกต่อไป เพราะย้ายช่องกรอกชื่อไปอยู่ในหน้า "ข้อมูลเพิ่มเติม" แล้ว)
+
+**รายละเอียดครั้งที่ 14 (feedback หลังทดลองใช้จริงต่อจากครั้งที่ 13):**
+
+| ข้อ | Requirement | จุดที่แก้ |
+|---|---|---|
+| 14.1 | เพิ่มรูป Passport ไว้ใต้ปุ่ม "นำเข้าข้อมูล OCR" ในหน้า "ข้อมูลเพิ่มเติม" | เพิ่ม `getPassportPhotoUrl(sheetName, seq)` หารูปจากชื่อไฟล์ตามคอนเวนชันเดิมของ `classifyAndSavePhoto` (`{seq}_PASSPORT_{sheetName}.jpg`) ในโฟลเดอร์ Drive ของแท็บนั้น คืน URL รูปย่อ (`drive.google.com/thumbnail`) ถ้าไม่พบไฟล์ (ยังไม่เคยจัดประเภทรูป PASSPORT) แสดงข้อความ "ยังไม่มีรูป Passport ที่จัดประเภทไว้" แทน — เรียกใช้ใน `renderExtraInfoPage` แสดงใต้ปุ่มนำเข้า OCR ทันที (ไม่ต้องกดอะไรเพิ่ม) |
+| 14.2 | เพิ่มช่องกรอกชื่อ-นามสกุล ในหน้า "ข้อมูลเพิ่มเติม" | เพิ่ม input `name` ในการ์ด OCR ต่อจากช่องเลขพาสปอร์ต pre-fill จาก `SUMMARY` คอลัมน์ F ที่เคยบันทึกไว้ (ถ้ามี); กดปุ่ม "นำเข้าข้อมูล OCR" จะเติมชื่อให้อัตโนมัติจากผลอ่าน Regex ก่อน (ถ้าไม่มีลอง PassportEye) และโชว์ทั้งสองแบบไว้เป็น hint ข้อความเล็กๆ ใต้ช่อง ("OCR อ่านได้ — Regex: ... \| PassportEye: ...") ให้เทียบเผื่อ auto-fill ผิด แก้เองในช่องได้อิสระ; `handleFetchOcrPreview` เพิ่ม `regexName`/`peName` ในผลลัพธ์ที่คืนให้หน้าเว็บ; `handleSaveSummaryExtra` เขียนคอลัมน์ F จากช่องนี้ตอนกด "บันทึก" |
+| 14.3 (2.1) | เพิ่มปุ่ม "จบ SEQ" ในปุ่ม quick reply ที่ขึ้นหลังบันทึก "ข้อมูลเพิ่มเติม" (เดิมมีแค่ [จอง SEQ][เลือก SEQ][สิ้นสุดแผ่นงาน]) | เพิ่มฟังก์ชันใหม่ `extraInfoSavedQuickReplyItems()` (แยกจาก `popupFollowUpQuickReplyItems()` เดิม) คืน 4 ปุ่ม [📌 จอง SEQ][🔢 เลือก SEQ][🏁 จบ SEQ][🏁 สิ้นสุดแผ่นงาน] ใช้เฉพาะข้อความยืนยันหลังบันทึกข้อมูลเพิ่มเติมใน `handleSaveSummaryExtra` — จุดอื่นที่ใช้ quick reply แบบ "หลังปิด popup" (บันทึก/เลื่อนจัดการรูปในข้อ 5, และข้อความตอบกลับของ "จบ SEQ" เอง) ยังใช้ `popupFollowUpQuickReplyItems()` เดิม (3 ปุ่ม) เพื่อไม่ให้โชว์ปุ่ม "จบ SEQ" ซ้ำทันทีหลังกดจบไปแล้ว |
+| 14.4 | เปลี่ยนเมนู "จบงาน" เป็น "จบ SEQ" — ไม่ต้องรอรับผล OCR อีกต่อไปก่อนจะจบ SEQ ได้ กดแล้วตอบกลับ "SEQ {n} ดำเนินการเสร็จสิ้นแล้ว กรุณาเลือก" พร้อม quick reply [📌 จอง SEQ][🔢 เลือก SEQ][🏁 สิ้นสุดแผ่นงาน] | ลบ `showSummaryAndNameOptions()` (Flex เลือกชื่อ Regex/PassportEye), `saveFinalNameAndComplete()`, `sendTaskCompletionQuickReply()`, และ postback `confirm_name_selection` ทิ้งทั้งหมด — ฟังก์ชันเหล่านี้พึ่งพา `userProperties` (`_TEMP_ROW`/`_NAME_REGEX`/`_NAME_PE`) ที่เดิมตั้งค่าตอน import OCR ซึ่งตอนนี้ไม่จำเป็นแล้วเพราะชื่อกรอก/แก้ไขผ่านหน้า "ข้อมูลเพิ่มเติม" โดยตรง (ข้อ 14.2) แทนที่ด้วยฟังก์ชันใหม่ `finishSeqCase(event, userId)` ทำแค่ล้างคิว pending ของ SEQ (`clearPendingQueueState`) + เอาออกจากรายการ SEQ ที่จองไว้ (`removeBookedSeq`) + ตอบข้อความปิดเคสพร้อม quick reply `popupFollowUpQuickReplyItems()` เปลี่ยน label ปุ่มจาก "🏁 จบงาน" เป็น "🏁 จบ SEQ" ใน `buildSeqActionQuickReplyItems()`; `handleSaveSummaryExtra` เอาส่วนที่เคยตั้ง `userProperties` เหล่านี้ออก เหลือแค่มาร์คแถว `OCR_RESULTS` เป็น `imported` (ขีดฆ่า) ไว้ดูสถานะย้อนหลังเฉยๆ |
+
+**ทดสอบข้อ 14:**
+- เปิดหน้า "ข้อมูลเพิ่มเติม" ของ SEQ ที่เคยถ่ายรูป Passport และจัดประเภทไว้แล้ว → ต้องเห็นรูป Passport แสดงอยู่ใต้ปุ่ม "นำเข้าข้อมูล OCR" ทันทีโดยไม่ต้องกดอะไร
+- เปิดหน้าเดิมของ SEQ ที่ยังไม่เคยจัดประเภทรูป PASSPORT เลย → ต้องเห็นข้อความ "ยังไม่มีรูป Passport ที่จัดประเภทไว้" แทนที่รูป ไม่ error
+- กด "นำเข้าข้อมูล OCR" → ช่องชื่อ-นามสกุลต้องเติมอัตโนมัติ และมีข้อความเล็กๆ โชว์ทั้งชื่อแบบ Regex และ PassportEye ให้เทียบ
+- แก้ไขชื่อในช่องเองแล้วกด "บันทึก" → เปิดชีตดู `SUMMARY` คอลัมน์ F ต้องเป็นชื่อที่แก้แล้ว
+- กด "บันทึก" ข้อมูลเพิ่มเติม → quick reply ที่ได้ต้องมี 4 ปุ่ม [📌 จอง SEQ][🔢 เลือก SEQ][🏁 จบ SEQ][🏁 สิ้นสุดแผ่นงาน]
+- ทดสอบกด "🏁 จบ SEQ" กับ SEQ ที่ **ยังไม่มีผล OCR เลย** (ยังไม่ได้ถ่ายรูป Passport หรือ OCR ยัง queued) → ต้องจบ SEQ ได้ปกติทันที ไม่ค้างรอ ไม่ error
+- กด "🏁 จบ SEQ" → ต้องได้ข้อความ "SEQ {n} ดำเนินการเสร็จสิ้นแล้ว กรุณาเลือก" พร้อม quick reply [📌 จอง SEQ][🔢 เลือก SEQ][🏁 สิ้นสุดแผ่นงาน] (3 ปุ่ม ไม่มี "จบ SEQ" ซ้ำ) และ SEQ นั้นต้องหายไปจากรายการ "SEQ ที่จองไว้แต่ยังไม่จบ" เมื่อเลือกแผ่นงาน/จอง SEQ ใหม่
