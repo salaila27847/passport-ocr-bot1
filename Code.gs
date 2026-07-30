@@ -1390,7 +1390,7 @@ function handleSaveSummaryExtra(e, body) {
       summarySheet.getRange(targetRow, 8).setValue(body.groupNew || '');   // H
       summarySheet.getRange(targetRow, 11).setValue(body.visaNow || '');   // K
       summarySheet.getRange(targetRow, 12).setValue(body.visaEx || '');    // L
-      summarySheet.getRange(targetRow, 13).setValue(body.deport ? 1 : ''); // M (DEPORT)
+      summarySheet.getRange(targetRow, 13).setValue(!!body.deport); // M (DEPORT)
       summarySheet.getRange(targetRow, 14).setValue(body.clauses || '');   // N
       summarySheet.getRange(targetRow, 15).setValue(body.note || '');      // O
     });
