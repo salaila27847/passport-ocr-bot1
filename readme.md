@@ -1867,7 +1867,7 @@ function handleSaveSummaryExtra(e, body) {
       summarySheet.getRange(targetRow, 8).setValue(body.groupNew || '');   // H
       summarySheet.getRange(targetRow, 11).setValue(body.visaNow || '');   // K
       summarySheet.getRange(targetRow, 12).setValue(body.visaEx || '');    // L
-      summarySheet.getRange(targetRow, 13).setValue(body.deport ? 1 : ''); // M (DEPORT)
+      summarySheet.getRange(targetRow, 13).setValue(!!body.deport); // M (DEPORT)
       summarySheet.getRange(targetRow, 14).setValue(body.clauses || '');   // N
       summarySheet.getRange(targetRow, 15).setValue(body.note || '');      // O
     });
@@ -2403,6 +2403,7 @@ function parseQueryString(queryString) {
 | ครั้งที่ 12 | บั๊กหลังทดลองใช้จริง: กดปุ่ม "เสร็จสิ้น"/"บันทึก" ในหน้า popup แล้วไม่มีอะไรเกิดขึ้นเลย, หน่วงเวลารับรูปสั้นเกินไป | `Code.gs` (`renderManagePhotosPage`, `renderExtraInfoPage`, `IMAGE_BATCH_DEBOUNCE_MS`) | ดูรายละเอียดด้านล่าง |
 | ครั้งที่ 13 | รวม "นำเข้าข้อมูล OCR" เข้ากับหน้า popup "ข้อมูลเพิ่มเติม" ให้แก้ไขค่าที่จะบันทึกได้เอง, เพศเป็น checkbox, alert เตือนสัญชาติไม่ตรงตอนกดนำเข้า, ขึ้น quick reply หลังบันทึก | `Code.gs` (รายละเอียดด้านล่าง) | ดูรายละเอียดด้านล่าง |
 | ครั้งที่ 14 | เพิ่มรูป Passport + ช่องชื่อ-นามสกุลในหน้า "ข้อมูลเพิ่มเติม", เพิ่มปุ่ม "จบ SEQ" ในปุ่ม quick reply หลังบันทึก, เปลี่ยน "จบงาน" เป็น "จบ SEQ" ไม่ต้องรอ OCR อีกต่อไป | `Code.gs` (รายละเอียดด้านล่าง) | ดูรายละเอียดด้านล่าง |
+| ครั้งที่ 15 | คอลัมน์ M (DEPORT) ในแท็บ `SUMMARY` เดิมบันทึกเป็นเลข `1`/สตริงว่าง `''` แทนค่า checkbox ไม่ใช่ Boolean จริง | `Code.gs` (`handleSaveSummaryExtra`) | เปลี่ยนเป็น `summarySheet.getRange(targetRow, 13).setValue(!!body.deport)` เขียนค่า Boolean `true`/`false` ตรงๆ ตามสถานะ checkbox ที่ติ๊กในหน้า "ข้อมูลเพิ่มเติม" (การอ่านค่ากลับมา pre-fill checkbox ใน `renderExtraInfoPage` ใช้ `!!rowValues[9]` อยู่แล้วซึ่งรองรับทั้งค่าเก่า `1`/`''` และค่าใหม่ `true`/`false` เหมือนกัน ไม่ต้อง migrate ข้อมูลเดิม) |
 
 **รายละเอียดครั้งที่ 11 (ต่อจากครั้งที่ 10 — ข้อ 5-6 ที่ตอนแรกวางแผนไว้ว่าจะใช้ LIFF):**
 
