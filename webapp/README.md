@@ -1,6 +1,6 @@
 # ระบบเช็คอินใหม่ (แทน LINE bot + Google Apps Script)
 
-สถานะ: **Phase 5 กำลังทำ — ทดสอบ integration จริงเท่าที่ทำได้โดยไม่มี Google credential แล้ว รอข้อมูลจากคุณเพื่อทดสอบส่วนที่เหลือ** ระบบเก่า (`app.py` + `Code.gs` ที่ root ของรีโป) ยังใช้งานได้ตามปกติจนกว่าจะ cutover (ดู Phase 6)
+สถานะ: **Phase 5 ทดสอบกับ credential จริงแล้ว (Sheets/Drive อ่าน-เขียนจริงผ่าน, auth verification จริงผ่าน) — เจอบั๊กจริง 1 ตัวที่ต้องแก้ก่อน cutover (อัปโหลดรูปด้วย service account ใช้ไม่ได้) และมี 2 เรื่องที่ยัง verify ไม่ได้จาก session นี้ (Typhoon OCR ถูก network policy ของ sandbox บล็อก, Google Sign-In แบบ interactive ในเบราว์เซอร์จริงต้องให้คุณทดสอบเอง) — ดูหัวข้อ "Phase 5 ทดสอบกับ credential จริง" ด้านล่าง** ระบบเก่า (`app.py` + `Code.gs` ที่ root ของรีโป) ยังใช้งานได้ตามปกติจนกว่าจะ cutover (ดู Phase 6)
 
 ## สถาปัตยกรรม
 
@@ -72,6 +72,23 @@ GOOGLE_OAUTH_CLIENT_ID=demo .venv/bin/python scripts/run_demo_server.py
 
 **ทดสอบแล้วผ่านทั้งหมดด้วยวิธีนี้ (Playwright, ยิง frontend จริงชนกับ backend จริง ไม่ mock response เอง):**
 sign-in → โหลดรายชื่อ Sheet จริงจาก backend → จอง SEQ (auto-extend logic จริง) → เปิดฟอร์มข้อมูลเพิ่มเติม SEQ 3 เห็นข้อมูลที่ seed ไว้จริง → กด "นำเข้าข้อมูล OCR" ได้ค่าจาก OCR_RESULTS จริง → แก้ไข NOTE แล้วบันทึก → reload หน้าเว็บใหม่ เห็นค่าที่บันทึกไว้จริง (ยืนยันว่าเขียนลง fake Sheet จริง ไม่ใช่แค่ state ฝั่ง browser) → อัปโหลดรูปพาสปอร์ตจริงผ่าน multipart form ไปยัง SEQ 2 → รูป preview ขึ้นจริง → reload แล้วรูปยังอยู่ → background OCR job (PassportEye จริง + Typhoon client จริงที่ fallback เพราะไม่มี API key) รันจบโดยไม่ทำให้ server ล่ม
+
+### Phase 5 ทดสอบกับ credential จริง (session ที่มี env var ให้แล้ว)
+
+ทดสอบตรงกับ `app.drive`/`app.sheets`/`app.ocr.typhoon_client`/`app.auth` (import โมดูลจริง เรียกจริง ไม่ผ่าน mock/fake ใดๆ) โดยใช้ `GOOGLE_SERVICE_ACCOUNT_JSON`/`TYPHOON_API_KEY`/`GOOGLE_OAUTH_CLIENT_ID`/`ALLOWED_STAFF_*` ที่มีอยู่ใน environment variable ของ session แล้ว ไม่ต้องรอสร้างใหม่
+
+**ผ่านหมด (อ่าน+เขียน Sheets/Drive จริง):**
+- `list_available_sheets()` เจอ Google Sheet จริง 10 ไฟล์ในโฟลเดอร์ `interview` ตามชื่อโฟลเดอร์ที่ตั้งไว้ — ยืนยันว่า service account credential + share สิทธิ์ถูกต้อง
+- อ่าน dropdown (GROUP/VISA/CLAUSE) จากชีตจริงได้ค่าจริง
+- เจอชีตชื่อ `testing1` ที่ดูเหมือนเป็นชีตสำหรับทดสอบ (ยืนยันกับคุณก่อนแล้วว่าใช้ทดสอบ write ได้) — ทดสอบ `book_seqs()` (จอง SEQ ใหม่จริง, เห็นวันที่+ข้อความจองเขียนลง SUMMARY จริง), `write_ocr_result()` (เขียนแถว OCR_RESULTS จริง, อ่านกลับมาตรงกับที่เขียน) ผ่านทั้งคู่ — **ทดสอบเสร็จแล้วล้างข้อมูลทดสอบออกจากชีตเรียบร้อย** (เคลียร์ booking กลับเป็นว่าง, ลบแถว OCR_RESULTS ที่สร้างไว้)
+
+**เจอบั๊กจริง 1 ตัว (ต้องแก้ก่อน Phase 6):**
+- `drive.upload_photo()` ยิงจริงแล้วได้ `403 storageQuotaExceeded`: *"Service Accounts do not have storage quota. Leverage shared drives... or use OAuth delegation instead."* — **service account ไม่มีพื้นที่เก็บไฟล์ของตัวเอง** การแชร์โฟลเดอร์ `interview` ให้ service account เป็น Editor พอสำหรับอ่าน/เขียน Sheets และสร้างโฟลเดอร์ย่อยได้ (ไม่กินพื้นที่) แต่**อัปโหลดไฟล์จริงไม่ได้เด็ดขาด**เพราะไฟล์ที่ service account สร้างจะถูกนับเป็นพื้นที่ของ service account เอง ไม่ใช่ของโฟลเดอร์/เจ้าของ — ระบบเดิม (`Code.gs`) ไม่เจอปัญหานี้เพราะรันในบริบทบัญชี Google Workspace ของคนจริงที่มีโควตาเอง ไม่ใช่ service account
+  - ทางแก้ที่เป็นไปได้ (ต้องตัดสินใจก่อน Phase 6): (1) ย้ายโฟลเดอร์ `interview` เข้า **Shared Drive** (ต้อง Google Workspace, พื้นที่นับเป็นขององค์กรไม่ใช่ของ account ที่สร้างไฟล์) หรือ (2) ตั้ง **domain-wide delegation** ให้ service account impersonate บัญชีจริงตอนอัปโหลด หรือ (3) เปลี่ยนมาใช้ OAuth ของบัญชีจริง (เช่นบัญชีที่ sign-in อยู่) แทน service account เฉพาะตอนอัปโหลดไฟล์ — ยังไม่ได้เลือกทางไหน รอคุยกับคุณ
+
+**ยัง verify ไม่ได้จาก session นี้ (ไม่ใช่บั๊ก แต่เป็นข้อจำกัดของ sandbox):**
+- **Typhoon OCR**: เรียก `extract_passport_name()` จริงแล้วโดน sandbox proxy ตอบ `403` ที่ปลายทาง `api.opentyphoon.ai` — เช็คแล้วว่าเป็น org egress policy ของ session นี้ที่ไม่ได้ allowlist โดเมนนี้ไว้ (ยืนยันจาก proxy status endpoint ว่าเป็น `connect_rejected`/policy denial ไม่ใช่ auth หรือโค้ดผิด) ส่วน Google Sheets/Drive API (`googleapis.com`) ผ่าน sandbox ได้ปกติ — ต้องทดสอบ Typhoon จริงอีกทีตอน deploy ขึ้น Cloud Run หรือรันจากเครื่อง/เครือข่ายที่ไม่ถูกบล็อก
+- **Google Sign-In แบบ interactive จริง**: ยืนยันได้แค่ "ท่อประปา" ถูกต้อง — `GET /config` คืน `google_client_id` จริง, endpoint ที่ต้อง auth ปฏิเสธ request ไม่มี token/token ปลอมถูกต้อง (401) ด้วย `id_token.verify_oauth2_token` ตัวจริงที่เรียก Google cert endpoint จริง (ไม่ใช่ mock) — แต่การกด "Sign in with Google" จริงในเบราว์เซอร์ต้องมีมนุษย์ล็อกอินบัญชี Google จริงๆ ซึ่ง session นี้ทำแทนไม่ได้ (ไม่มีเบราว์เซอร์แบบ interactive/ไม่มีบัญชีให้ล็อกอิน) — ทดสอบเองตามขั้นตอนใน "รันทดสอบในเครื่อง" ด้านล่าง หรือถ้าอยากให้ agent ทดสอบ `GET /me` ต่อให้ครบ ส่ง ID token จริง (อายุสั้น ๆ จากการ sign-in ครั้งหนึ่ง) มาให้ทดสอบเพิ่มได้
 
 ### REST API (Phase 2-4)
 
@@ -151,5 +168,5 @@ frontend เป็น static files ล้วน deploy แยกจาก backen
 | 2 — Backend core REST API | ✅ เสร็จ | 8 endpoints, 49 unit test ผ่านรวม (เพิ่ม 21 เคสของ Phase นี้) |
 | 3 — OCR pipeline + Typhoon | ✅ เสร็จ | ย้าย `app.py` เข้ามา (ตัด regex ออก) + เพิ่ม Typhoon OCR, 84 unit test ผ่านรวม |
 | 4 — Frontend PWA | ✅ เสร็จ | Google Sign-In auth (ใหม่ทั้งฝั่ง backend/frontend) + หน้าจอเจ้าหน้าที่ครบ (เลือก Sheet/จอง SEQ/รูปภาพ/ข้อมูลเพิ่มเติม), 97 unit test + Playwright E2E ผ่านหมด (mock ทั้ง Google Sign-In และ backend เพราะยังไม่มี credential จริง) |
-| 5 — Integration test | 🔶 ทำได้เท่าที่ไม่ต้องมี credential แล้ว | frontend จริงคุยกับ backend จริงทั้งชุด (routing/Pydantic/auth middleware/background OCR job รวม PassportEye/Typhoon client จริง) ผ่าน `scripts/run_demo_server.py` ยืนยันว่า contract ระหว่าง frontend/backend ตรงกันจริง ไม่ใช่แค่ตรงกับที่ frontend สมมติเอาเอง — **ที่เหลือรอ**: Sheet สำเนาจริง + OAuth Client ID จริง + service account จริงจากคุณ ถึงจะทดสอบ Google Sign-In จริงและ Sheets/Drive/Typhoon ของจริงได้ |
+| 5 — Integration test | 🔶 ทดสอบกับ credential จริงแล้ว เจอบั๊กจริง 1 ตัว | ทดสอบ Sheets/Drive จริงทั้งอ่าน+เขียน (list sheets, dropdown, book SEQ, เขียน OCR_RESULTS) ผ่านหมดกับชีตทดสอบ `testing1` — **เจอบั๊กจริง**: อัปโหลดรูปด้วย service account ใช้ไม่ได้ (`403 storageQuotaExceeded`, service account ไม่มีโควตาพื้นที่ของตัวเอง) ต้องแก้ก่อน Phase 6 (ดูรายละเอียด/ทางแก้ในหัวข้อ "Phase 5 ทดสอบกับ credential จริง") — auth verification จริง (`id_token.verify_oauth2_token` เรียก Google cert endpoint จริง) ผ่าน แต่ยังไม่ได้ทดสอบ interactive sign-in จริงในเบราว์เซอร์ (ต้องมีมนุษย์ล็อกอิน) — Typhoon OCR ยิงจริงจาก session นี้ไม่ได้เพราะ sandbox network policy บล็อก `api.opentyphoon.ai` (ต้องทดสอบตอน deploy จริงหรือจากเครือข่ายที่ไม่ถูกบล็อก) |
 | 6 — Cutover | รอ | ปิด LINE bot + GAS |
