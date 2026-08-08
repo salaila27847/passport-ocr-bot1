@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Migration in progress
+
+`app.py` + `Code.gs` (LINE bot + GAS) are being replaced by a new system in `webapp/` (FastAPI backend +
+PWA frontend, Google Sheets/Drive kept as the data store, Typhoon OCR added alongside passporteye). See
+`webapp/README.md` for architecture and phase status. Until Phase 6 (cutover) is done, **`app.py` and
+`Code.gs` are still the live production system** — keep them working, don't remove anything from them as
+part of building `webapp/`.
+
 ## What this is
 
 A two-part system for OCR-ing passport MRZ data during an event check-in workflow, driven from a LINE chat bot:
