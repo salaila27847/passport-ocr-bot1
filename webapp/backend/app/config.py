@@ -14,5 +14,13 @@ class Settings:
     allowed_staff_emails: str = os.environ.get("ALLOWED_STAFF_EMAILS", "")
     allowed_staff_domain: str = os.environ.get("ALLOWED_STAFF_DOMAIN", "")
 
+    # Service account อัปโหลดไฟล์เข้า Drive ไม่ได้ (ไม่มีโควตาพื้นที่ของตัวเอง — ดู webapp/README.md
+    # หัวข้อ Phase 5) เมื่อโฟลเดอร์ปลายทางไม่ได้อยู่ใน Shared Drive จึงต้องอัปโหลดแทนด้วยบัญชี Google
+    # จริงที่มีโควตา ผ่าน refresh token ที่ขอครั้งเดียว (สร้างด้วย scripts/get_drive_oauth_refresh_token.py) —
+    # ไม่ตั้งค่า 3 ตัวนี้ = อัปโหลดรูปยังใช้ service account เหมือนเดิม (จะพังด้วย storageQuotaExceeded)
+    google_drive_oauth_client_id: str = os.environ.get("GOOGLE_DRIVE_OAUTH_CLIENT_ID", "")
+    google_drive_oauth_client_secret: str = os.environ.get("GOOGLE_DRIVE_OAUTH_CLIENT_SECRET", "")
+    google_drive_refresh_token: str = os.environ.get("GOOGLE_DRIVE_REFRESH_TOKEN", "")
+
 
 settings = Settings()
