@@ -1,6 +1,11 @@
 from pydantic import BaseModel
 
 
+class MeResponse(BaseModel):
+    email: str
+    name: str
+
+
 class SheetInfo(BaseModel):
     id: str
     name: str
@@ -17,7 +22,6 @@ class DropdownOptions(BaseModel):
 
 class BookingRequest(BaseModel):
     count: int
-    user_name: str
     flight_no: str = ""
 
 

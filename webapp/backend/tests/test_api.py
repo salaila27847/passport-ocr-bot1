@@ -9,9 +9,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import api, drive, sheets
+from app.auth import StaffUser, require_staff_user
 from app.main import app
 
 client = TestClient(app)
+
+TEST_STAFF = StaffUser(email="staff@example.com", name="Staff Tester")
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +22,26 @@ def _reset_mocks(monkeypatch):
     # กันไม่ให้ test ไหนหลุดไปเรียก Google API จริงโดยไม่ตั้งใจ ถ้า mock ไม่ครบ
     monkeypatch.setattr(sheets, "get_sheets_service", lambda: (_ for _ in ()).throw(AssertionError("no mock")))
     monkeypatch.setattr(drive, "get_drive_service", lambda: (_ for _ in ()).throw(AssertionError("no mock")))
+    # ทุก endpoint อยู่หลัง require_staff_user แล้ว — override เป็นผู้ใช้ทดสอบคงที่แทนการยิง Google จริง
+    app.dependency_overrides[require_staff_user] = lambda: TEST_STAFF
+    yield
+    app.dependency_overrides.pop(require_staff_user, None)
+
+
+def test_unauthenticated_request_rejected_end_to_end():
+    # ยืนยันว่า router-level auth dependency ทำงานจริง ไม่ใช่แค่เชื่อว่าเขียนถูก — เอา override ออกชั่วคราว
+    app.dependency_overrides.pop(require_staff_user, None)
+    try:
+        res = client.get("/sheets")
+        assert res.status_code == 401
+    finally:
+        app.dependency_overrides[require_staff_user] = lambda: TEST_STAFF
+
+
+def test_me_endpoint_returns_authenticated_identity():
+    res = client.get("/me")
+    assert res.status_code == 200
+    assert res.json() == {"email": TEST_STAFF.email, "name": TEST_STAFF.name}
 
 
 def test_list_sheets(monkeypatch):
@@ -65,12 +88,12 @@ def test_book_seqs_success_also_writes_flight_no(monkeypatch):
 
     res = client.post(
         "/sheets/sheet1/bookings",
-        json={"count": 2, "user_name": "เจ้าหน้าที่ A", "flight_no": "TG123"},
+        json={"count": 2, "flight_no": "TG123"},
     )
 
     assert res.status_code == 200
     assert res.json() == {"booked_seqs": ["1", "2"]}
-    book_mock.assert_awaited_once_with("sheet1", 2, "เจ้าหน้าที่ A")
+    book_mock.assert_awaited_once_with("sheet1", 2, TEST_STAFF.name)  # ชื่อมาจาก auth ไม่ใช่ client-supplied
     flight_mock.assert_awaited_once_with("sheet1", ["1", "2"], "TG123")
 
 
@@ -79,7 +102,7 @@ def test_book_seqs_without_flight_no_skips_that_call(monkeypatch):
     flight_mock = AsyncMock()
     monkeypatch.setattr(sheets, "update_flight_no", flight_mock)
 
-    res = client.post("/sheets/sheet1/bookings", json={"count": 1, "user_name": "X"})
+    res = client.post("/sheets/sheet1/bookings", json={"count": 1})
 
     assert res.status_code == 200
     flight_mock.assert_not_awaited()
@@ -89,7 +112,7 @@ def test_book_seqs_full_sheet_returns_409(monkeypatch):
     monkeypatch.setattr(
         sheets, "book_seqs", AsyncMock(side_effect=ValueError("ไม่มีแถว SEQ ว่างที่สามารถจองได้เลยครับ"))
     )
-    res = client.post("/sheets/sheet1/bookings", json={"count": 1, "user_name": "X"})
+    res = client.post("/sheets/sheet1/bookings", json={"count": 1})
     assert res.status_code == 409
     assert "ไม่มีแถว SEQ ว่าง" in res.json()["detail"]
 

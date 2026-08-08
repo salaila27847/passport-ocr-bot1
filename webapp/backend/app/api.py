@@ -1,8 +1,9 @@
 import time
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 
 from app import drive, sheets
+from app.auth import StaffUser, require_staff_user
 from app.ocr.pipeline import run_passport_ocr_job, run_ticket_ocr_job
 from app.schemas import (
     BasicOkResponse,
@@ -11,12 +12,18 @@ from app.schemas import (
     DropdownOptions,
     ExtraInfoFields,
     ExtraInfoResponse,
+    MeResponse,
     OcrPreviewResponse,
     PhotoResponse,
     SheetInfo,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_staff_user)])
+
+
+@router.get("/me", response_model=MeResponse)
+async def get_me(staff: StaffUser = Depends(require_staff_user)):
+    return MeResponse(email=staff.email, name=staff.name)
 
 
 # ==========================================
@@ -45,9 +52,9 @@ async def get_dropdowns(sheet_id: str):
 # จอง SEQ (พอร์ตจาก processBookingInSummarySheet/updateFlightNoInSummarySheet)
 # ==========================================
 @router.post("/sheets/{sheet_id}/bookings", response_model=BookingResponse)
-async def book_seqs(sheet_id: str, body: BookingRequest):
+async def book_seqs(sheet_id: str, body: BookingRequest, staff: StaffUser = Depends(require_staff_user)):
     try:
-        booked = await sheets.book_seqs(sheet_id, body.count, body.user_name)
+        booked = await sheets.book_seqs(sheet_id, body.count, staff.name)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if body.flight_no:

@@ -6,14 +6,13 @@
   <title>ระบบเช็คอิน</title>
   <link rel="manifest" href="manifest.webmanifest">
   <meta name="theme-color" content="#06c755">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="styles.css">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
-  <header>ระบบเช็คอิน</header>
-  <main>
-    <p>กำลังพัฒนา (Phase 0 — โครงโปรเจกต์)</p>
-    <p>สถานะ backend: <span id="backend-status">กำลังเช็ค...</span></p>
-  </main>
-  <script src="app.js"></script>
+  <div id="app"></div>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

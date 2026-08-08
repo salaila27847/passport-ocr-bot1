@@ -1,4 +1,57 @@
 * { box-sizing: border-box; }
-body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f5f7; color: #1a1a1a; }
-header { position: sticky; top: 0; background: #06c755; color: #fff; padding: 14px 16px; font-weight: 700; font-size: 16px; }
-main { padding: 16px; max-width: 640px; margin: 0 auto; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f5f7; color: #1a1a1a; padding-bottom: 96px; }
+
+header { position: sticky; top: 0; background: #06c755; color: #fff; padding: 14px 16px; font-weight: 700; font-size: 16px; box-shadow: 0 2px 6px rgba(0,0,0,.08); z-index: 10; }
+header small { display: block; font-weight: 400; font-size: 12px; opacity: .9; margin-top: 2px; }
+header a { color: #fff; text-decoration: underline; }
+
+.container { padding: 12px; max-width: 640px; margin: 0 auto; }
+.card { background: #fff; border-radius: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 12px; overflow: hidden; padding-bottom: 4px; }
+.section-title { padding: 12px 12px 0; font-size: 13px; font-weight: 700; color: #06c755; }
+
+.field { padding: 12px; border-bottom: 1px solid #f0f0f0; }
+.field:last-child { border-bottom: none; }
+.field label { display: block; font-size: 13px; font-weight: 700; color: #555; margin-bottom: 6px; }
+select, textarea, input[type=text], input[type=number] { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px; background: #fafafa; box-sizing: border-box; }
+textarea { resize: vertical; min-height: 70px; font-family: inherit; }
+
+.checkbox-field { display: flex; align-items: center; gap: 8px; }
+.checkbox-field input { width: 20px; height: 20px; accent-color: #06c755; }
+.sex-row { display: flex; gap: 20px; }
+
+button { border: none; border-radius: 10px; padding: 13px 16px; font-size: 15px; font-weight: 700; cursor: pointer; }
+.btn-primary { background: #06c755; color: #fff; width: 100%; }
+.btn-primary:disabled { background: #b7e6c8; color: #fff; cursor: not-allowed; }
+.btn-secondary { background: #eee; color: #444; width: 100%; }
+.btn-import { margin: 12px; width: calc(100% - 24px); padding: 10px; border-radius: 8px; border: 1px solid #06c755; background: #fff; color: #06c755; font-weight: 700; font-size: 14px; text-align: center; display: block; }
+.btn-import:disabled { opacity: 0.6; }
+.upload-label { cursor: pointer; }
+
+.list-item { display: block; width: 100%; text-align: left; background: #fafafa; border: 1px solid #eee; border-radius: 10px; padding: 14px; margin: 8px 12px; font-weight: 600; color: #1a1a1a; }
+.list-item:first-child { margin-top: 12px; }
+.list-item.featured { border-color: #06c755; background: #eafff1; }
+.list-loading { padding: 20px; text-align: center; color: #888; }
+
+.hint { text-align: center; font-size: 12px; color: #888; padding: 8px 12px; }
+.error-box { background: #fdecea; color: #b3261e; padding: 12px; border-radius: 10px; margin: 12px; font-size: 13px; }
+.ocr-msg { margin: 0 12px 12px; font-size: 12px; color: #e74c3c; display: none; }
+.name-hint { margin: -6px 12px 12px; font-size: 12px; color: #888; display: none; }
+
+.passport-photo-wrap { margin: 0 12px 12px; text-align: center; }
+.passport-photo-wrap img { max-width: 100%; max-height: 220px; border-radius: 10px; border: 1px solid #eee; }
+.passport-photo-wrap .no-photo, .photo-preview .no-photo { font-size: 12px; color: #999; padding: 20px 0; background: #fafafa; border-radius: 10px; }
+.photo-preview { margin: 0 12px 8px; text-align: center; }
+.photo-preview img { max-width: 100%; max-height: 200px; border-radius: 10px; border: 1px solid #eee; }
+.photo-card { padding-bottom: 12px; }
+
+.footer-bar { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; padding: 10px 12px; box-shadow: 0 -2px 8px rgba(0,0,0,.1); max-width: 640px; margin: 0 auto; }
+
+.done-screen { text-align: center; padding: 60px 20px; }
+.done-screen .icon { font-size: 48px; }
+.done-screen p { font-size: 15px; color: #444; line-height: 1.6; }
+
+.center-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.signin-card { text-align: center; padding: 32px 24px; max-width: 320px; }
+.signin-icon { font-size: 48px; margin-bottom: 8px; }
+.signin-card h1 { font-size: 18px; margin: 8px 0; }
+#google-signin-btn { display: flex; justify-content: center; margin-top: 16px; }
