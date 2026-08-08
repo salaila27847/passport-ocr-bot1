@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 
 from app import drive
-from tests.fake_drive import FakeDriveService
+from app.testkit.fake_drive import FakeDriveService
 
 
 @pytest.fixture

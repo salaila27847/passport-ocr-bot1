@@ -1,6 +1,6 @@
 # ระบบเช็คอินใหม่ (แทน LINE bot + Google Apps Script)
 
-สถานะ: **Phase 4 เสร็จแล้ว (Frontend PWA)** ระบบเก่า (`app.py` + `Code.gs` ที่ root ของรีโป) ยังใช้งานได้ตามปกติจนกว่าจะ cutover (ดู Phase 6)
+สถานะ: **Phase 5 กำลังทำ — ทดสอบ integration จริงเท่าที่ทำได้โดยไม่มี Google credential แล้ว รอข้อมูลจากคุณเพื่อทดสอบส่วนที่เหลือ** ระบบเก่า (`app.py` + `Code.gs` ที่ root ของรีโป) ยังใช้งานได้ตามปกติจนกว่าจะ cutover (ดู Phase 6)
 
 ## สถาปัตยกรรม
 
@@ -29,6 +29,8 @@ Google Sheets/Drive ยังเป็นฐานข้อมูลหลัก
 - `backend/app/ocr/typhoon_client.py` — เรียก Typhoon OCR (OpenAI-compatible API) ด้วย prompt ที่เขียนเอง (ไม่ใช้ `ocr_document()` ของแพ็กเกจ `typhoon-ocr` เพราะ prompt ของมันผูกไว้สำหรับแปลงทั้งหน้าเป็น markdown ทั่วไป ที่นี่ต้องการ field เจาะจงเป็น JSON) — ดึงชื่อจากหน้าพาสปอร์ต / เลขไฟลต์จากตั๋ว / ชื่อโรงแรมจากใบจองที่พัก, error ทุกแบบ (ไม่ตั้ง API key, เรียก API ไม่สำเร็จ) รวมเป็น `TyphoonOcrError` เดียวให้ caller จับง่าย
 - `backend/app/ocr/pipeline.py` — งานพื้นหลังหลังอัปโหลดรูป (เรียกผ่าน FastAPI `BackgroundTasks`): รูป PASSPORT รัน PassportEye + Typhoon พร้อมกันแล้วเขียน OCR_RESULTS, รูป Return Ticket ลองดึง Flight No. อัตโนมัติด้วย Typhoon
 - `backend/app/auth.py` — ยืนยันตัวตนด้วย Google Sign-In (ดูหัวข้อ Auth ด้านล่าง) แทน LINE userId เดิม
+- `backend/app/testkit/` — fake Sheets/Drive API แบบ in-memory (ย้ายมาจาก `tests/` ตอน Phase 5 เพราะมีคนใช้ 2 ที่แล้ว: pytest suite และ `scripts/run_demo_server.py`) ไม่ใช้ในโค้ด production เลย
+- `backend/scripts/run_demo_server.py` — รัน backend **จริงทั้งชุด** (FastAPI routing/Pydantic/auth) แต่สลับ Sheets/Drive เป็นข้อมูลจำลอง + bypass การตรวจ Google token จริง สำหรับเดโม/ทดสอบ frontend-backend integration โดยไม่ต้องมี Google credential (ดูหัวข้อ Demo mode ด้านล่าง) — **ห้ามใช้ใน production**
 - `backend/tests/` — unit test ครบทุกโมดูลข้างต้น (97 เคส) ใช้ fake Sheets/Drive API แบบ in-memory + FastAPI `TestClient` + mock ของ `passporteye.read_mrz`/OpenAI client/`id_token.verify_oauth2_token` เพราะยังไม่มี credential จริง/tesseract binary ให้ทดสอบตรงๆ — รันด้วย `pytest`
 - `frontend/` — PWA แบบ static file ล้วน ไม่มี build tool (ES modules ที่เบราว์เซอร์รองรับเองอยู่แล้ว):
   - `index.html` — shell, โหลด Google Identity Services script
@@ -56,6 +58,20 @@ Google Sheets/Drive ยังเป็นฐานข้อมูลหลัก
 `POST /sheets/{id}/bookings` เปลี่ยนจากรับ `user_name` จาก client (spoof ได้) เป็นใช้ชื่อจากตัวตนที่ auth แล้วแทน — endpoint ใหม่ `GET /me` ให้ frontend เช็คว่า token ยังใช้ได้และแสดงชื่อผู้ใช้ปัจจุบัน
 
 `GET /config` เป็น endpoint เดียวที่ **ไม่** อยู่หลัง auth (ตั้งใจ) เพราะ frontend ต้องรู้ `google_client_id` ก่อนจะ sign in ได้
+
+### Demo mode (Phase 5) — รัน frontend คุยกับ backend จริงโดยไม่ต้องมี Google credential
+
+```bash
+cd webapp/backend
+.venv/bin/pip install -r requirements.txt
+GOOGLE_OAUTH_CLIENT_ID=demo .venv/bin/python scripts/run_demo_server.py
+```
+รันคู่กับ `python3 -m http.server 8090` ใน `webapp/frontend/` ตามปกติ เปิด `http://localhost:8090` ได้เลย — ปุ่ม Google Sign-In จะยังเป็นปุ่มจริงจาก Google (เพราะ script โหลดจาก `accounts.google.com` ตรงๆ) กด sign-in จริงไม่ได้เพราะ `GOOGLE_OAUTH_CLIENT_ID=demo` ไม่ใช่ client ID จริง — โหมดนี้มีไว้ทดสอบด้วย Playwright ที่ mock เฉพาะ Google Identity Services script (ดูหัวข้อ Playwright integration test ด้านล่าง) ไม่ใช่ไว้กดใช้เองในเบราว์เซอร์ตรงๆ
+
+ข้อมูลจำลองใน `run_demo_server.py`: SEQ 1 (ว่าง, จองได้), SEQ 2 (จองแล้ว, ยังไม่กรอกข้อมูล), SEQ 3 (กรอกข้อมูลครบ + มีผล OCR ให้ทดสอบปุ่ม "นำเข้าข้อมูล OCR")
+
+**ทดสอบแล้วผ่านทั้งหมดด้วยวิธีนี้ (Playwright, ยิง frontend จริงชนกับ backend จริง ไม่ mock response เอง):**
+sign-in → โหลดรายชื่อ Sheet จริงจาก backend → จอง SEQ (auto-extend logic จริง) → เปิดฟอร์มข้อมูลเพิ่มเติม SEQ 3 เห็นข้อมูลที่ seed ไว้จริง → กด "นำเข้าข้อมูล OCR" ได้ค่าจาก OCR_RESULTS จริง → แก้ไข NOTE แล้วบันทึก → reload หน้าเว็บใหม่ เห็นค่าที่บันทึกไว้จริง (ยืนยันว่าเขียนลง fake Sheet จริง ไม่ใช่แค่ state ฝั่ง browser) → อัปโหลดรูปพาสปอร์ตจริงผ่าน multipart form ไปยัง SEQ 2 → รูป preview ขึ้นจริง → reload แล้วรูปยังอยู่ → background OCR job (PassportEye จริง + Typhoon client จริงที่ fallback เพราะไม่มี API key) รันจบโดยไม่ทำให้ server ล่ม
 
 ### REST API (Phase 2-4)
 
@@ -91,7 +107,7 @@ cd webapp/frontend
 python3 -m http.server 8090
 # เปิด http://localhost:8090
 ```
-ทดสอบในเครื่องโดยไม่มี Google OAuth Client ID จริงได้จำกัด — หน้า sign-in จะขึ้น error "ยังไม่ได้ตั้งค่า Google Sign-In" จนกว่าจะตั้ง `GOOGLE_OAUTH_CLIENT_ID` ในฝั่ง backend (ดูขั้นตอนด้านล่าง) ระหว่างพัฒนา ผมทดสอบ flow ทั้งหมด (sign-in → เลือก Sheet → จอง SEQ → อัปโหลดรูป → กรอกฟอร์ม → นำเข้า OCR → บันทึก) ด้วย Playwright โดย mock ทั้ง Google Identity Services script และ response จาก backend endpoint ทุกตัว ยืนยันว่า UI/state ทำงานถูกต้องแล้ว แต่ **ยังไม่เคยทดสอบกับ Google Sign-In จริงหรือ backend ที่มี credential จริง** เป็นงานของ Phase 5
+ทดสอบในเครื่องโดยไม่มี Google OAuth Client ID จริงได้จำกัด — หน้า sign-in จะขึ้น error "ยังไม่ได้ตั้งค่า Google Sign-In" จนกว่าจะตั้ง `GOOGLE_OAUTH_CLIENT_ID` (ใช้ `scripts/run_demo_server.py` แทน `uvicorn` ตรงๆ ถ้าอยากลองกดใช้ทั้งระบบโดยไม่ต้องมี Google credential จริง — ดูหัวข้อ Demo mode ด้านบน)
 
 **รัน test (ไม่ต้องมี Google credential จริง เพราะใช้ fake Sheets/Drive API + mock token verification):**
 ```bash
@@ -135,5 +151,5 @@ frontend เป็น static files ล้วน deploy แยกจาก backen
 | 2 — Backend core REST API | ✅ เสร็จ | 8 endpoints, 49 unit test ผ่านรวม (เพิ่ม 21 เคสของ Phase นี้) |
 | 3 — OCR pipeline + Typhoon | ✅ เสร็จ | ย้าย `app.py` เข้ามา (ตัด regex ออก) + เพิ่ม Typhoon OCR, 84 unit test ผ่านรวม |
 | 4 — Frontend PWA | ✅ เสร็จ | Google Sign-In auth (ใหม่ทั้งฝั่ง backend/frontend) + หน้าจอเจ้าหน้าที่ครบ (เลือก Sheet/จอง SEQ/รูปภาพ/ข้อมูลเพิ่มเติม), 97 unit test + Playwright E2E ผ่านหมด (mock ทั้ง Google Sign-In และ backend เพราะยังไม่มี credential จริง) |
-| 5 — Integration test | ⏳ ถัดไป | ทดสอบกับ Sheet สำเนา + Google Sign-In จริง + credential จริงทั้งหมด |
+| 5 — Integration test | 🔶 ทำได้เท่าที่ไม่ต้องมี credential แล้ว | frontend จริงคุยกับ backend จริงทั้งชุด (routing/Pydantic/auth middleware/background OCR job รวม PassportEye/Typhoon client จริง) ผ่าน `scripts/run_demo_server.py` ยืนยันว่า contract ระหว่าง frontend/backend ตรงกันจริง ไม่ใช่แค่ตรงกับที่ frontend สมมติเอาเอง — **ที่เหลือรอ**: Sheet สำเนาจริง + OAuth Client ID จริง + service account จริงจากคุณ ถึงจะทดสอบ Google Sign-In จริงและ Sheets/Drive/Typhoon ของจริงได้ |
 | 6 — Cutover | รอ | ปิด LINE bot + GAS |

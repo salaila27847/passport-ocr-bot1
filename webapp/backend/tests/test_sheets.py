@@ -3,7 +3,7 @@ import time
 import pytest
 
 from app import sheets
-from tests.fake_sheets import FakeSheetsService
+from app.testkit.fake_sheets import FakeSheetsService
 
 
 def make_summary_grid():
