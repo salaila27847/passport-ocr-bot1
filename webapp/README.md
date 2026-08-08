@@ -153,18 +153,57 @@ cd webapp/backend
    - **ก่อนใช้งานจริง**: กลับไปที่ OAuth consent screen แล้วกด **Publish App** เปลี่ยนสถานะจาก "Testing" เป็น "In production" — ถ้าปล่อยเป็น Testing ไว้ refresh token ที่ได้จะหมดอายุใน 7 วัน (กด Publish ไม่ต้องผ่าน verify ของ Google ก็ได้ แค่ยังมีหน้าเตือน unverified ตอน login เหมือนเดิม ไม่กระทบอะไรเพราะสคริปต์นี้รันครั้งเดียว)
 9. คัดลอก `backend/.env.example` เป็น `.env` (ไฟล์ต้องชื่อ `.env` เป๊ะๆ — แก้ `.env.example` ตรงๆ จะไม่ถูกอ่าน) แล้วกรอกค่า: `GOOGLE_SERVICE_ACCOUNT_JSON` (เนื้อหาไฟล์ JSON จากข้อ 3, เป็น JSON string ทั้งก้อน), `MAIN_FOLDER_NAME` (ปกติคือ `interview`), `TYPHOON_API_KEY`, `GOOGLE_OAUTH_CLIENT_ID` (จากข้อ 6), `ALLOWED_STAFF_DOMAIN`/`ALLOWED_STAFF_EMAILS` (จากข้อ 7), `GOOGLE_DRIVE_OAUTH_CLIENT_ID`/`GOOGLE_DRIVE_OAUTH_CLIENT_SECRET`/`GOOGLE_DRIVE_REFRESH_TOKEN` (จากข้อ 8) — `app/config.py` โหลด `.env` เข้า `os.environ` อัตโนมัติผ่าน `python-dotenv` ตอน import (ไม่ทับ env var จริงที่ตั้งไว้แล้ว เช่นตอน deploy) ไม่ต้อง `source`/`export` เอง
 
-## Deploy ขึ้น Google Cloud Run (ทำตอนเริ่มมี logic จริงแล้ว ไม่ต้องรีบทำตอนนี้)
+## Deploy ขึ้น Google Cloud Run (Phase 6)
+
+ทำบนเครื่องที่มี `gcloud` login เข้าโปรเจกต์จริงแล้วเท่านั้น (sandbox/CI ทำแทนไม่ได้ ไม่มีสิทธิ์เข้าถึง GCP project ของคุณ) ก่อน deploy ครั้งแรกให้เปิดใช้ API ที่จำเป็นก่อน:
+
+```bash
+gcloud config set project YOUR_PROJECT_ID
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com
+```
+
+### 1. สร้าง secret ใน Secret Manager (ครั้งแรกครั้งเดียว)
+
+ค่า 3 ตัวนี้เป็นความลับ ห้ามใส่เป็น `--set-env-vars` ตรงๆ (จะโชว์เป็น plain text ใน Cloud Run console/audit log) — ดึงจาก `.env` แล้วส่งเข้า Secret Manager ตรงๆ กัน quoting พังจาก `private_key` ที่มี newline:
+
+```bash
+cd webapp/backend
+python3 -c "from dotenv import dotenv_values; print(dotenv_values('.env')['GOOGLE_SERVICE_ACCOUNT_JSON'], end='')" \
+  | gcloud secrets create google-service-account --data-file=-
+python3 -c "from dotenv import dotenv_values; print(dotenv_values('.env')['GOOGLE_DRIVE_OAUTH_CLIENT_SECRET'], end='')" \
+  | gcloud secrets create drive-oauth-client-secret --data-file=-
+python3 -c "from dotenv import dotenv_values; print(dotenv_values('.env')['GOOGLE_DRIVE_REFRESH_TOKEN'], end='')" \
+  | gcloud secrets create drive-oauth-refresh-token --data-file=-
+```
+
+(deploy ครั้งต่อๆ ไปถ้าค่าเปลี่ยน ใช้ `gcloud secrets versions add <name> --data-file=-` แทน `create`)
+
+### 2. Deploy backend
 
 ```bash
 gcloud run deploy passport-checkin-backend \
   --source webapp/backend \
   --region asia-southeast1 \
   --allow-unauthenticated \
-  --set-env-vars MAIN_FOLDER_NAME=interview,TYPHOON_API_KEY=...,GOOGLE_OAUTH_CLIENT_ID=...,ALLOWED_STAFF_DOMAIN=... \
-  --set-secrets GOOGLE_SERVICE_ACCOUNT_JSON=google-service-account:latest
+  --set-env-vars MAIN_FOLDER_NAME=interview,TYPHOON_API_KEY=...,GOOGLE_OAUTH_CLIENT_ID=...,ALLOWED_STAFF_DOMAIN=...,GOOGLE_DRIVE_OAUTH_CLIENT_ID=... \
+  --set-secrets GOOGLE_SERVICE_ACCOUNT_JSON=google-service-account:latest,GOOGLE_DRIVE_OAUTH_CLIENT_SECRET=drive-oauth-client-secret:latest,GOOGLE_DRIVE_REFRESH_TOKEN=drive-oauth-refresh-token:latest
 ```
 
-frontend เป็น static files ล้วน deploy แยกจาก backend ได้เลย (เช่น Render Static Site, Cloudflare Pages, หรือแม้แต่ Cloud Storage bucket — ฟรีทุกตัว) ต้องแก้ `BACKEND_URL` ใน `frontend/app.js` (หรือประกาศ `window.BACKEND_URL` ใน `index.html` ก่อนโหลด `app.js`) ให้ชี้ไป URL ของ backend จริงหลัง deploy
+`--allow-unauthenticated` แปลว่า URL เข้าถึงได้จากอินเทอร์เน็ตทั่วไป (ปกติสำหรับ Cloud Run ที่ auth ทำเองในแอป) — ระบบมี auth ของตัวเองอยู่แล้วผ่าน Google Sign-In + `ALLOWED_STAFF_DOMAIN`/`ALLOWED_STAFF_EMAILS` (fail closed ถ้าไม่ตั้งค่า) เก็บ URL ที่ได้จาก output (`https://passport-checkin-backend-xxxxx.run.app`) ไว้ใช้ขั้นต่อไป
+
+ทดสอบว่า deploy ผ่านจริง: `curl https://<URL ที่ได้>/health` ควรได้ 200
+
+### 3. Deploy frontend
+
+frontend เป็น static files ล้วน deploy แยกจาก backend ได้เลย (เช่น Render Static Site, Cloudflare Pages, หรือแม้แต่ Cloud Storage bucket — ฟรีทุกตัว) ต้องแก้ `BACKEND_URL` ใน `frontend/app.js` (หรือประกาศ `window.BACKEND_URL` ใน `index.html` ก่อนโหลด `app.js`) ให้ชี้ไป URL ของ backend จาก ข้อ 2
+
+### 4. เพิ่ม origin ของ frontend ที่ deploy จริงเข้า OAuth Client (ข้อ 6 ในหัวข้อ "สิ่งที่ต้องตั้งค่าเอง")
+
+กลับไปที่ Google Cloud Console > APIs & Services > Credentials > OAuth client ID ตัวที่เป็น Web application (Google Sign-In) แล้วเพิ่ม URL จริงของ frontend เข้า "Authorized JavaScript origins" — ไม่งั้น Google Sign-In จะ error ตอนล็อกอินจาก URL จริง (ผ่านเฉพาะตอน dev ที่ `localhost`)
+
+### 5. ทดสอบ end-to-end บน URL จริงก่อนปิดระบบเก่า
+
+ล็อกอินจริงผ่านเบราว์เซอร์ (Google Sign-In), เลือกชีตทดสอบ `testing1`, ลองจอง SEQ, ถ่ายรูป OCR จริงผ่าน Typhoon, อัปโหลดรูปจริง — ครบทุกจุดที่ sandbox ทดสอบแทนไม่ได้ ผ่านหมดค่อยพิจารณาขั้นปิด LINE bot + GAS (Code.gs)
 
 ## แผนเป็นเฟส
 
@@ -176,4 +215,4 @@ frontend เป็น static files ล้วน deploy แยกจาก backen
 | 3 — OCR pipeline + Typhoon | ✅ เสร็จ | ย้าย `app.py` เข้ามา (ตัด regex ออก) + เพิ่ม Typhoon OCR, 84 unit test ผ่านรวม |
 | 4 — Frontend PWA | ✅ เสร็จ | Google Sign-In auth (ใหม่ทั้งฝั่ง backend/frontend) + หน้าจอเจ้าหน้าที่ครบ (เลือก Sheet/จอง SEQ/รูปภาพ/ข้อมูลเพิ่มเติม), 97 unit test + Playwright E2E ผ่านหมด (mock ทั้ง Google Sign-In และ backend เพราะยังไม่มี credential จริง) |
 | 5 — Integration test | 🔶 ทดสอบกับ credential จริงแล้ว เจอบั๊กจริง 1 ตัวและแก้+verify แล้ว | ทดสอบ Sheets/Drive จริงทั้งอ่าน+เขียน (list sheets, dropdown, book SEQ, เขียน OCR_RESULTS) ผ่านหมดกับชีตทดสอบ `testing1` — **เจอบั๊กจริง**: อัปโหลดรูปด้วย service account ใช้ไม่ได้ (`403 storageQuotaExceeded`, service account ไม่มีโควตาพื้นที่ของตัวเอง, โฟลเดอร์เป็นของ Gmail ส่วนตัวใช้ Shared Drive/domain delegation ไม่ได้) — **แก้แล้วและ verify กับ Drive จริงแล้ว**: `get_drive_service()` อัปโหลดผ่าน OAuth ของเจ้าของโฟลเดอร์แทนเมื่อตั้งค่า `GOOGLE_DRIVE_REFRESH_TOKEN` ไว้ — คุณรัน `scripts/get_drive_oauth_refresh_token.py` ขอ refresh token จริงแล้ว ทดสอบอัปโหลดไฟล์เข้าโฟลเดอร์รูปของ `testing1` จริงสำเร็จ ไม่เจอ `storageQuotaExceeded` อีก (ลบไฟล์ทดสอบออกแล้ว) — เหลือแค่ตั้งค่า 3 ตัวนี้ใน `.env`/Cloud Run ของ production จริง (97 unit test ผ่านหมด) — auth verification จริง (`id_token.verify_oauth2_token` เรียก Google cert endpoint จริง) ผ่าน แต่ยังไม่ได้ทดสอบ interactive sign-in จริงในเบราว์เซอร์ (ต้องมีมนุษย์ล็อกอิน) — Typhoon OCR ยิงจริงจาก session นี้ไม่ได้เพราะ sandbox network policy บล็อก `api.opentyphoon.ai` (ต้องทดสอบตอน deploy จริงหรือจากเครือข่ายที่ไม่ถูกบล็อก) |
-| 6 — Cutover | รอ | ปิด LINE bot + GAS |
+| 6 — Cutover | 🔶 เริ่มแล้ว | deploy backend/frontend ขึ้นจริง + ทดสอบ end-to-end บน URL จริง (Google Sign-In/Typhoon OCR ที่ sandbox ทดสอบแทนไม่ได้) ก่อนค่อยปิด LINE bot + GAS เป็นขั้นสุดท้าย — ดูหัวข้อ "Deploy ขึ้น Google Cloud Run" ด้านบน |
