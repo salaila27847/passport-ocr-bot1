@@ -250,18 +250,21 @@ def test_upload_photo_standard_type_overwrites_and_saves(monkeypatch):
     save_mock = AsyncMock()
     monkeypatch.setattr(sheets, "save_image_url_to_photo_row", save_mock)
 
+    # ใช้ Accomodation แทน PASSPORT เพราะ PASSPORT/Return Ticket ตอนนี้ trigger OCR background job
+    # ด้วย (ทดสอบแยกไว้ในเคสของมันเองด้านล่าง) เคสนี้โฟกัสแค่กลไก overwrite/บันทึกไฟล์ทั่วไป
     res = client.post(
         "/sheets/sheet1/seq/5/photos",
-        data={"sheet_name": "GroupA", "photo_type": "PASSPORT"},
+        data={"sheet_name": "GroupA", "photo_type": "Accomodation"},
         files={"file": ("a.jpg", b"bytes", "image/jpeg")},
     )
 
     assert res.status_code == 200
     body = res.json()
-    assert body["photo_type"] == "PASSPORT"
+    assert body["photo_type"] == "Accomodation"
+    assert body["ocr_queued"] is False
     assert body["url"] == "https://drive.google.com/thumbnail?id=file1&sz=w1000"
-    delete_mock.assert_awaited_once_with("folder1", "5_PASSPORT_GroupA.jpg")
-    save_mock.assert_awaited_once_with("sheet1", 3, "PASSPORT", body["url"])
+    delete_mock.assert_awaited_once_with("folder1", "5_ACCOMMODATION_GroupA.jpg")
+    save_mock.assert_awaited_once_with("sheet1", 3, "Accomodation", body["url"])
 
 
 def test_upload_photo_etc_type_allocates_column(monkeypatch):
@@ -284,6 +287,50 @@ def test_upload_photo_etc_type_allocates_column(monkeypatch):
     save_mock.assert_awaited_once_with("sheet1", 3, "ETC", body["url"], etc_col=8)
 
 
+def test_upload_photo_passport_triggers_ocr_background_job(monkeypatch):
+    monkeypatch.setattr(sheets, "find_seq_row_in_photo_tab", AsyncMock(return_value=3))
+    monkeypatch.setattr(drive, "get_or_create_photo_folder", AsyncMock(return_value="folder1"))
+    monkeypatch.setattr(drive, "delete_existing_file", AsyncMock())
+    monkeypatch.setattr(drive, "upload_photo", AsyncMock(return_value="file1"))
+    monkeypatch.setattr(sheets, "save_image_url_to_photo_row", AsyncMock())
+    queued_mock = AsyncMock()
+    monkeypatch.setattr(sheets, "record_ocr_queued", queued_mock)
+    job_mock = AsyncMock()
+    monkeypatch.setattr(api, "run_passport_ocr_job", job_mock)
+
+    res = client.post(
+        "/sheets/sheet1/seq/5/photos",
+        data={"sheet_name": "GroupA", "photo_type": "PASSPORT"},
+        files={"file": ("a.jpg", b"passportbytes", "image/jpeg")},
+    )
+
+    assert res.status_code == 200
+    assert res.json()["ocr_queued"] is True
+    queued_mock.assert_awaited_once_with("sheet1", "5")
+    # BackgroundTasks รันจริงหลังตอบ response แล้วภายใน TestClient เดียวกัน เลยเช็คได้ทันที
+    job_mock.assert_awaited_once_with("sheet1", "5", b"passportbytes")
+
+
+def test_upload_photo_return_ticket_triggers_flight_no_job_not_ocr_queued(monkeypatch):
+    monkeypatch.setattr(sheets, "find_seq_row_in_photo_tab", AsyncMock(return_value=3))
+    monkeypatch.setattr(drive, "get_or_create_photo_folder", AsyncMock(return_value="folder1"))
+    monkeypatch.setattr(drive, "delete_existing_file", AsyncMock())
+    monkeypatch.setattr(drive, "upload_photo", AsyncMock(return_value="file1"))
+    monkeypatch.setattr(sheets, "save_image_url_to_photo_row", AsyncMock())
+    ticket_job_mock = AsyncMock()
+    monkeypatch.setattr(api, "run_ticket_ocr_job", ticket_job_mock)
+
+    res = client.post(
+        "/sheets/sheet1/seq/5/photos",
+        data={"sheet_name": "GroupA", "photo_type": "Return Ticket"},
+        files={"file": ("a.jpg", b"ticketbytes", "image/jpeg")},
+    )
+
+    assert res.status_code == 200
+    assert res.json()["ocr_queued"] is False  # ไม่ใช่ passport, ไม่ต้อง poll ocr-preview
+    ticket_job_mock.assert_awaited_once_with("sheet1", "5", b"ticketbytes")
+
+
 def test_get_photo_not_found_returns_404(monkeypatch):
     monkeypatch.setattr(api, "_find_photo_url", AsyncMock(return_value=""))
     res = client.get("/sheets/sheet1/seq/5/photo", params={"sheet_name": "GroupA", "photo_type": "PASSPORT"})
@@ -294,4 +341,4 @@ def test_get_photo_found(monkeypatch):
     monkeypatch.setattr(api, "_find_photo_url", AsyncMock(return_value="https://example/x.jpg"))
     res = client.get("/sheets/sheet1/seq/5/photo", params={"sheet_name": "GroupA", "photo_type": "PASSPORT"})
     assert res.status_code == 200
-    assert res.json() == {"photo_type": "PASSPORT", "url": "https://example/x.jpg"}
+    assert res.json() == {"photo_type": "PASSPORT", "url": "https://example/x.jpg", "ocr_queued": False}

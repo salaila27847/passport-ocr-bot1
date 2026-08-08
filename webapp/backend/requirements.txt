@@ -6,3 +6,6 @@ google-auth-httplib2==0.2.0
 python-multipart==0.0.17
 websockets==13.1
 httpx==0.28.1
+passporteye==2.2.2
+Pillow==10.2.0
+openai==1.58.1

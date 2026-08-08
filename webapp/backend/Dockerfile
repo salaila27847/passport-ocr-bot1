@@ -1,5 +1,11 @@
 FROM python:3.12-slim
 
+# ติดตั้ง Tesseract OCR ที่ passporteye ต้องใช้ (เหมือน Dockerfile เดิมของ app.py ที่ root)
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    libtesseract-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt .

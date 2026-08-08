@@ -1,8 +1,9 @@
 import time
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile
 
 from app import drive, sheets
+from app.ocr.pipeline import run_passport_ocr_job, run_ticket_ocr_job
 from app.schemas import (
     BasicOkResponse,
     BookingRequest,
@@ -146,13 +147,16 @@ async def get_ocr_preview(sheet_id: str, seq: str):
 
 
 # ==========================================
-# รูปถ่าย (พอร์ตจาก classifyAndSavePhoto/getPassportPhotoUrl — เฉพาะส่วนอัปโหลด/บันทึกลงชีต
-# ยังไม่ trigger ส่ง OCR ให้ตอนนี้ เพราะ OCR pipeline ยังไม่มีจนกว่าจะถึง Phase 3)
+# รูปถ่าย (พอร์ตจาก classifyAndSavePhoto/getPassportPhotoUrl)
+# PASSPORT -> ยิง PassportEye + Typhoon OCR แบบ background (Phase 3)
+# Return Ticket -> ลองดึงเลข Flight No. อัตโนมัติด้วย Typhoon OCR แบบ background เช่นกัน
+# Accomodation -> ยังไม่มีคอลัมน์ปลายทางใน SUMMARY ให้เขียนอัตโนมัติ (รอการตัดสินใจเรื่อง schema) เลยยังไม่ trigger OCR ให้
 # ==========================================
 @router.post("/sheets/{sheet_id}/seq/{seq}/photos", response_model=PhotoResponse)
 async def upload_photo(
     sheet_id: str,
     seq: str,
+    background_tasks: BackgroundTasks,
     sheet_name: str = Form(...),
     photo_type: str = Form(...),
     file: UploadFile = File(...),
@@ -182,7 +186,15 @@ async def upload_photo(
         url = drive.thumbnail_url(file_id)
         await sheets.save_image_url_to_photo_row(sheet_id, row, photo_type, url)
 
-    return PhotoResponse(photo_type=photo_type, url=url)
+    ocr_queued = False
+    if photo_type == "PASSPORT":
+        await sheets.record_ocr_queued(sheet_id, seq)
+        background_tasks.add_task(run_passport_ocr_job, sheet_id, seq, content)
+        ocr_queued = True
+    elif photo_type == "Return Ticket":
+        background_tasks.add_task(run_ticket_ocr_job, sheet_id, seq, content)
+
+    return PhotoResponse(photo_type=photo_type, url=url, ocr_queued=ocr_queued)
 
 
 @router.get("/sheets/{sheet_id}/seq/{seq}/photo", response_model=PhotoResponse)

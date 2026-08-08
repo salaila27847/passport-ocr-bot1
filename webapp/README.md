@@ -1,6 +1,6 @@
 # ระบบเช็คอินใหม่ (แทน LINE bot + Google Apps Script)
 
-สถานะ: **Phase 2 เสร็จแล้ว (Backend REST API)** ระบบเก่า (`app.py` + `Code.gs` ที่ root ของรีโป) ยังใช้งานได้ตามปกติจนกว่าจะ cutover (ดู Phase 6)
+สถานะ: **Phase 3 เสร็จแล้ว (OCR pipeline + Typhoon OCR)** ระบบเก่า (`app.py` + `Code.gs` ที่ root ของรีโป) ยังใช้งานได้ตามปกติจนกว่าจะ cutover (ดู Phase 6)
 
 ## สถาปัตยกรรม
 
@@ -25,8 +25,21 @@ Google Sheets/Drive ยังเป็นฐานข้อมูลหลัก
 - `backend/app/drive.py` — Drive API: รายชื่อ Google Sheet ที่เลือกได้ (พอร์ตจาก `findAllSheetsRecursive`), โฟลเดอร์รูปตามชื่อ, อัปโหลด/ค้นหา/ลบไฟล์
 - `backend/app/api.py` — REST endpoints (พอร์ตจาก `handleEvent`/`doPost` ฝั่ง business logic — ดูตารางด้านล่าง)
 - `backend/app/schemas.py` — Pydantic request/response models
-- `backend/tests/` — unit test ครบทุกโมดูลข้างต้น (49 เคส) ใช้ fake Sheets/Drive API แบบ in-memory + FastAPI `TestClient` เพราะยังไม่มี credential จริงให้ทดสอบกับ Google โดยตรง — รันด้วย `pytest`
+- `backend/app/ocr/passporteye_client.py` — พอร์ตจาก `app.py` เดิม (passporteye/Tesseract, retry ด้วย enhanced image, `clean_name_field`/`is_noise_token`) **ตัด `parse_mrz_line1_regex()` ออก** — ไม่ใช้ regex เป็นแหล่งชื่อคู่แข่งอีกต่อไป
+- `backend/app/ocr/typhoon_client.py` — เรียก Typhoon OCR (OpenAI-compatible API) ด้วย prompt ที่เขียนเอง (ไม่ใช้ `ocr_document()` ของแพ็กเกจ `typhoon-ocr` เพราะ prompt ของมันผูกไว้สำหรับแปลงทั้งหน้าเป็น markdown ทั่วไป ที่นี่ต้องการ field เจาะจงเป็น JSON) — ดึงชื่อจากหน้าพาสปอร์ต / เลขไฟลต์จากตั๋ว / ชื่อโรงแรมจากใบจองที่พัก, error ทุกแบบ (ไม่ตั้ง API key, เรียก API ไม่สำเร็จ) รวมเป็น `TyphoonOcrError` เดียวให้ caller จับง่าย
+- `backend/app/ocr/pipeline.py` — งานพื้นหลังหลังอัปโหลดรูป (เรียกผ่าน FastAPI `BackgroundTasks`): รูป PASSPORT รัน PassportEye + Typhoon พร้อมกันแล้วเขียน OCR_RESULTS, รูป Return Ticket ลองดึง Flight No. อัตโนมัติด้วย Typhoon
+- `backend/tests/` — unit test ครบทุกโมดูลข้างต้น (84 เคส) ใช้ fake Sheets/Drive API แบบ in-memory + FastAPI `TestClient` + mock ของ `passporteye.read_mrz`/OpenAI client เพราะยังไม่มี credential จริง/tesseract binary ให้ทดสอบตรงๆ — รันด้วย `pytest`
 - `frontend/` — PWA แบบ static file (ยังไม่มี build tool เพื่อลดความซับซ้อน/ความเสี่ยงเรื่อง dependency — ถ้าจำเป็นค่อยเพิ่ม bundler ใน Phase 4)
+
+### OCR pipeline (Phase 3)
+
+รูป PASSPORT ที่อัปโหลดจะรัน 2 แหล่งพร้อมกัน (ไม่บล็อกการตอบกลับ HTTP ของการอัปโหลด):
+- **PassportEye** อ่าน MRZ (checksum-validated) — แหล่งหลัก ถ้าอ่านไม่ได้เลย = OCR error
+- **Typhoon OCR** อ่านชื่อจากหน้าไบโอเมตริกที่พิมพ์ไว้ (ไม่ใช่ MRZ) — แหล่งเสริมให้เจ้าหน้าที่เทียบ ถ้า Typhoon ล่ม/ไม่ได้ตั้ง API key ก็ไปต่อด้วยผล PassportEye อย่างเดียว ไม่ทำให้ทั้ง pipeline ล้ม
+
+**ตัด regex ออกจากการเทียบชื่อโดยตั้งใจ** — เหลือแค่ PassportEye กับ Typhoon สองแหล่ง (คอลัมน์ `OCR_RESULTS` เดิมชื่อ `RegexName` เปลี่ยนเป็น `TyphoonName`)
+
+รูป Return Ticket จะลองดึง Flight No. อัตโนมัติด้วย Typhoon แล้วเติมคอลัมน์ Flight No. ของ SEQ นั้นให้ (เจ้าหน้าที่ยังแก้ไข/กรอกเองได้ตามปกติถ้าอ่านไม่ได้) — ส่วนรูป Accomodation ยังไม่ trigger OCR อัตโนมัติเพราะ SUMMARY sheet ไม่มีคอลัมน์ปลายทางสำหรับชื่อโรงแรม/วันที่เช็คอิน ต้องตัดสินใจเรื่อง schema ก่อนถึงจะเขียนอัตโนมัติได้ (ฟังก์ชันดึงข้อมูล `extract_accommodation_fields()` เตรียมไว้แล้วใน `typhoon_client.py` รอแค่จุดเขียนลงชีต)
 
 ### REST API (Phase 2)
 
@@ -37,7 +50,7 @@ Google Sheets/Drive ยังเป็นฐานข้อมูลหลัก
 | `POST /sheets/{id}/bookings` | `processBookingInSummarySheet` + `updateFlightNoInSummarySheet` | รวม 2 ขั้นตอนแชทเดิมเป็น request เดียว เพราะฟอร์มเว็บกรอกพร้อมกันได้ |
 | `GET/PUT /sheets/{id}/seq/{seq}/extra-info` | `renderExtraInfoPage` / `handleSaveSummaryExtra` | |
 | `GET /sheets/{id}/seq/{seq}/ocr-preview` | `handleFetchOcrPreview` | |
-| `POST/GET /sheets/{id}/seq/{seq}/photos`, `/photo` | `classifyAndSavePhoto` (เฉพาะส่วนอัปโหลด/บันทึกลงชีต) / `getPassportPhotoUrl` | **ยังไม่ trigger ส่ง OCR อัตโนมัติ** — เป็นงาน Phase 3 ตอนมี OCR pipeline จริง |
+| `POST/GET /sheets/{id}/seq/{seq}/photos`, `/photo` | `classifyAndSavePhoto` / `getPassportPhotoUrl` | อัปโหลดรูป PASSPORT/Return Ticket จะ trigger OCR background job (ดูหัวข้อ OCR pipeline ด้านล่าง) |
 
 **ตัดออกไปโดยตั้งใจจาก state machine เดิม:** ทั้ง `_awaitingSeq`/`_awaitingBookingCount`/`_pendingQueue_*` (per-user flags ใน `PropertiesService`) ไม่จำเป็นอีกต่อไป เพราะ frontend เป็นฟอร์มเว็บที่ส่ง `sheet_id`/`seq` มาตรงๆ ทุก request แทนการเดาขั้นตอนจากข้อความแชท ส่วนรายการ "SEQ ที่จองไว้แต่ยังไม่จบงาน" ต่อพนักงาน (`BOOKED_{sheetId}_{userName}` ใน Script Properties) ยังไม่พอร์ตมา — พึ่งพา in-memory state ข้าม request ไม่เข้ากับ Cloud Run ที่ scale เป็นหลาย instance ได้ ต้องหาที่เก็บถาวรกว่านี้ถ้าจะทำ ตอนนี้ข้ามไปก่อนเพราะเป็นแค่ตัวช่วยเตือน ไม่ใช่ข้อมูลหลัก
 
@@ -97,7 +110,7 @@ gcloud run deploy passport-checkin-backend \
 | 0 — Setup & Foundations | ✅ เสร็จ | โครง backend/frontend, health check ใช้งานได้ |
 | 1 — Data layer | ✅ เสร็จ | โมดูล Sheets/Drive API แทน `SpreadsheetApp`/`DriveApp`, 28 unit test ผ่าน |
 | 2 — Backend core REST API | ✅ เสร็จ | 8 endpoints, 49 unit test ผ่านรวม (เพิ่ม 21 เคสของ Phase นี้) |
-| 3 — OCR pipeline + Typhoon | รอ | ย้าย `app.py` เข้ามา + เพิ่ม Typhoon OCR |
-| 4 — Frontend PWA | รอ | หน้าจอเจ้าหน้าที่จริง |
+| 3 — OCR pipeline + Typhoon | ✅ เสร็จ | ย้าย `app.py` เข้ามา (ตัด regex ออก) + เพิ่ม Typhoon OCR, 84 unit test ผ่านรวม |
+| 4 — Frontend PWA | ⏳ ถัดไป | หน้าจอเจ้าหน้าที่จริง |
 | 5 — Integration test | รอ | ทดสอบกับ Sheet สำเนา |
 | 6 — Cutover | รอ | ปิด LINE bot + GAS |

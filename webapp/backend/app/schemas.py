@@ -63,3 +63,4 @@ class OcrPreviewResponse(BaseModel):
 class PhotoResponse(BaseModel):
     photo_type: str
     url: str
+    ocr_queued: bool = False
