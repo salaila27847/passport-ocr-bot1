@@ -1,6 +1,6 @@
 # ระบบเช็คอินใหม่ (แทน LINE bot + Google Apps Script)
 
-สถานะ: **Phase 1 เสร็จแล้ว (Data layer)** ระบบเก่า (`app.py` + `Code.gs` ที่ root ของรีโป) ยังใช้งานได้ตามปกติจนกว่าจะ cutover (ดู Phase 6)
+สถานะ: **Phase 2 เสร็จแล้ว (Backend REST API)** ระบบเก่า (`app.py` + `Code.gs` ที่ root ของรีโป) ยังใช้งานได้ตามปกติจนกว่าจะ cutover (ดู Phase 6)
 
 ## สถาปัตยกรรม
 
@@ -17,14 +17,29 @@ Google Sheets/Drive ยังเป็นฐานข้อมูลหลัก
 
 ## โครงสร้างโฟลเดอร์
 
-- `backend/app/main.py` — FastAPI entrypoint (`/healthz`)
+- `backend/app/main.py` — FastAPI entrypoint (`/healthz` + mounts `api.router`)
 - `backend/app/config.py` — env-based config
 - `backend/app/google_auth.py` — สร้าง Sheets/Drive API client จาก service account
 - `backend/app/locking.py` — `AsyncKeyedLock` ล็อกเฉพาะ key (ต่อแถว/ต่อ SEQ) แทน `LockService` ของ GAS ที่ล็อกทั้งสคริปต์
-- `backend/app/sheets.py` — Sheets API: SEQ→row cache (5 นาที, พอร์ตจาก `findRowBySeqCached`), อ่าน/เขียน SUMMARY (ข้อมูลเพิ่มเติม), อ่าน dropdown, จอง SEQ (พร้อม auto-extend แถว), อ่าน/เขียน OCR_RESULTS, เขียนคอลัมน์รูปในแท็บ PHOTO
+- `backend/app/sheets.py` — Sheets API: SEQ→row cache (5 นาที, พอร์ตจาก `findRowBySeqCached`), อ่าน/เขียน SUMMARY (ข้อมูลเพิ่มเติม), อ่าน dropdown, จอง SEQ (พร้อม auto-extend แถว), อัปเดต Flight No., อ่าน/เขียน OCR_RESULTS, เขียนคอลัมน์รูปในแท็บ PHOTO
 - `backend/app/drive.py` — Drive API: รายชื่อ Google Sheet ที่เลือกได้ (พอร์ตจาก `findAllSheetsRecursive`), โฟลเดอร์รูปตามชื่อ, อัปโหลด/ค้นหา/ลบไฟล์
-- `backend/tests/` — unit test ครบทุกโมดูลข้างต้น (28 เคส) ใช้ fake Sheets/Drive API แบบ in-memory เพราะยังไม่มี credential จริงให้ทดสอบกับ Google โดยตรง — รันด้วย `pytest`
+- `backend/app/api.py` — REST endpoints (พอร์ตจาก `handleEvent`/`doPost` ฝั่ง business logic — ดูตารางด้านล่าง)
+- `backend/app/schemas.py` — Pydantic request/response models
+- `backend/tests/` — unit test ครบทุกโมดูลข้างต้น (49 เคส) ใช้ fake Sheets/Drive API แบบ in-memory + FastAPI `TestClient` เพราะยังไม่มี credential จริงให้ทดสอบกับ Google โดยตรง — รันด้วย `pytest`
 - `frontend/` — PWA แบบ static file (ยังไม่มี build tool เพื่อลดความซับซ้อน/ความเสี่ยงเรื่อง dependency — ถ้าจำเป็นค่อยเพิ่ม bundler ใน Phase 4)
+
+### REST API (Phase 2)
+
+| Endpoint | พอร์ตจาก (Code.gs) | หมายเหตุ |
+|---|---|---|
+| `GET /sheets` | `sendSheetFlexMenu` | รายชื่อ Sheet ให้เลือก |
+| `GET /sheets/{id}/dropdowns` | `getColumnValuesForDropdown` ×4 | GROUP/VISA/CLAUSE |
+| `POST /sheets/{id}/bookings` | `processBookingInSummarySheet` + `updateFlightNoInSummarySheet` | รวม 2 ขั้นตอนแชทเดิมเป็น request เดียว เพราะฟอร์มเว็บกรอกพร้อมกันได้ |
+| `GET/PUT /sheets/{id}/seq/{seq}/extra-info` | `renderExtraInfoPage` / `handleSaveSummaryExtra` | |
+| `GET /sheets/{id}/seq/{seq}/ocr-preview` | `handleFetchOcrPreview` | |
+| `POST/GET /sheets/{id}/seq/{seq}/photos`, `/photo` | `classifyAndSavePhoto` (เฉพาะส่วนอัปโหลด/บันทึกลงชีต) / `getPassportPhotoUrl` | **ยังไม่ trigger ส่ง OCR อัตโนมัติ** — เป็นงาน Phase 3 ตอนมี OCR pipeline จริง |
+
+**ตัดออกไปโดยตั้งใจจาก state machine เดิม:** ทั้ง `_awaitingSeq`/`_awaitingBookingCount`/`_pendingQueue_*` (per-user flags ใน `PropertiesService`) ไม่จำเป็นอีกต่อไป เพราะ frontend เป็นฟอร์มเว็บที่ส่ง `sheet_id`/`seq` มาตรงๆ ทุก request แทนการเดาขั้นตอนจากข้อความแชท ส่วนรายการ "SEQ ที่จองไว้แต่ยังไม่จบงาน" ต่อพนักงาน (`BOOKED_{sheetId}_{userName}` ใน Script Properties) ยังไม่พอร์ตมา — พึ่งพา in-memory state ข้าม request ไม่เข้ากับ Cloud Run ที่ scale เป็นหลาย instance ได้ ต้องหาที่เก็บถาวรกว่านี้ถ้าจะทำ ตอนนี้ข้ามไปก่อนเพราะเป็นแค่ตัวช่วยเตือน ไม่ใช่ข้อมูลหลัก
 
 **หมายเหตุสำคัญ:** ระบบเดิมให้เจ้าหน้าที่ **เลือกได้ว่าจะทำงานกับ Google Sheet ไฟล์ไหน** (มีหลายไฟล์ในโฟลเดอร์ `interview`, หนึ่งไฟล์ต่อกลุ่ม/งาน) ไม่ได้ผูกกับ Sheet เดียวตายตัว — ดังนั้น `sheet_id` เป็นพารามิเตอร์ที่ทุกฟังก์ชันใน `sheets.py`/`drive.py` รับเข้ามาต่อ request ไม่ใช่ค่า config ตายตัว (`list_available_sheets()` ใน `drive.py` คือจุดที่หา Sheet ทั้งหมดให้เลือก)
 
@@ -81,7 +96,7 @@ gcloud run deploy passport-checkin-backend \
 |---|---|---|
 | 0 — Setup & Foundations | ✅ เสร็จ | โครง backend/frontend, health check ใช้งานได้ |
 | 1 — Data layer | ✅ เสร็จ | โมดูล Sheets/Drive API แทน `SpreadsheetApp`/`DriveApp`, 28 unit test ผ่าน |
-| 2 — Backend core REST API | ⏳ ถัดไป | port state machine จาก `Code.gs` |
+| 2 — Backend core REST API | ✅ เสร็จ | 8 endpoints, 49 unit test ผ่านรวม (เพิ่ม 21 เคสของ Phase นี้) |
 | 3 — OCR pipeline + Typhoon | รอ | ย้าย `app.py` เข้ามา + เพิ่ม Typhoon OCR |
 | 4 — Frontend PWA | รอ | หน้าจอเจ้าหน้าที่จริง |
 | 5 — Integration test | รอ | ทดสอบกับ Sheet สำเนา |

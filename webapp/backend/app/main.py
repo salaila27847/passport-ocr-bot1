@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 
+from app.api import router as api_router
 from app.config import settings
 
 app = FastAPI(title="Passport Check-in Backend")
+app.include_router(api_router)
 
 
 @app.get("/healthz")

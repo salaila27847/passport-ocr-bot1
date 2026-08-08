@@ -275,6 +275,16 @@ async def book_seqs(sheet_id: str, count: int, user_name: str) -> list[str]:
         return booked
 
 
+async def update_flight_no(sheet_id: str, seq_list: list[str], flight_no: str) -> None:
+    row_map = await _get_row_map(sheet_id, "SUMMARY")
+    updates = []
+    for seq in seq_list:
+        row = row_map.get(str(seq).strip())
+        if row is not None:
+            updates.append({"range": f"SUMMARY!C{row}", "values": [[flight_no]]})
+    await _batch_update_values(sheet_id, updates)
+
+
 # ==========================================
 # OCR_RESULTS (พอร์ตจาก getOcrResultRowData/recordOcrQueued/handleOcrCallback/getOrCreateOcrResultsSheet)
 # ==========================================

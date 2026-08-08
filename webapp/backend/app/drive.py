@@ -10,6 +10,14 @@ from app.google_auth import get_drive_service
 GOOGLE_SHEETS_MIME_TYPE = "application/vnd.google-apps.spreadsheet"
 GOOGLE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 
+# พอร์ตจาก PHOTO_TYPE_FILE_LABELS ใน Code.gs — value ต้องตรงกับ photoType ที่ frontend ส่งมาเป๊ะ
+PHOTO_TYPE_FILE_LABELS = {
+    "PASSPORT": "PASSPORT",
+    "Return Ticket": "TICKET",
+    "Accomodation": "ACCOMMODATION",
+    "ETC": "ETC",
+}
+
 
 async def _execute(request) -> dict:
     return await asyncio.to_thread(request.execute)
