@@ -55,8 +55,8 @@ class OcrPreviewResponse(BaseModel):
     nationality: str = ""
     passport_no: str = ""
     sex: str = ""
-    regex_name: str = ""
     pe_name: str = ""
+    typhoon_name: str = ""
     remark: str = ""
 
 

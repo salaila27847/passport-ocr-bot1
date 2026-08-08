@@ -139,8 +139,8 @@ async def get_ocr_preview(sheet_id: str, seq: str):
         nationality=info.nationality,
         passport_no=info.passport_no,
         sex=info.sex,
-        regex_name=info.regex_name,
         pe_name=info.pe_name,
+        typhoon_name=info.typhoon_name,
         remark=info.remark,
     )
 

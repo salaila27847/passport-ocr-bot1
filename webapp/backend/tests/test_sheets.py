@@ -163,7 +163,7 @@ async def test_write_ocr_result_overwrites_same_seq_row_not_append(fake_service)
 
     await sheets.write_ocr_result(
         "sheet1", "42", success=True, nationality="THA", passport_no="AA1", sex="F",
-        regex_name="A B", pe_name="A B",
+        pe_name="A B", typhoon_name="A B",
     )
     sheets.invalidate_row_cache("sheet1", "OCR_RESULTS")
     done_row = await sheets.find_row_by_seq("sheet1", "OCR_RESULTS", "42")

@@ -126,7 +126,7 @@ def test_save_extra_info_marks_ocr_imported_when_done(monkeypatch):
         "get_ocr_result_row",
         AsyncMock(return_value=sheets.OcrResultRow(
             row_index=7, status="done", nationality="THA", passport_no="", sex="",
-            regex_name="", pe_name="", remark="", import_status="pending", queued_at_ms=None,
+            pe_name="", typhoon_name="", remark="", import_status="pending", queued_at_ms=None,
         )),
     )
     mark_mock = AsyncMock()
@@ -169,7 +169,7 @@ def test_ocr_preview_queued_within_timeout(monkeypatch):
         "get_ocr_result_row",
         AsyncMock(return_value=sheets.OcrResultRow(
             row_index=1, status="queued", nationality="", passport_no="", sex="",
-            regex_name="", pe_name="", remark="", import_status="pending",
+            pe_name="", typhoon_name="", remark="", import_status="pending",
             queued_at_ms=int(time_module.time() * 1000),
         )),
     )
@@ -183,7 +183,7 @@ def test_ocr_preview_queued_past_timeout_reports_error(monkeypatch):
         "get_ocr_result_row",
         AsyncMock(return_value=sheets.OcrResultRow(
             row_index=1, status="queued", nationality="", passport_no="", sex="",
-            regex_name="", pe_name="", remark="", import_status="pending",
+            pe_name="", typhoon_name="", remark="", import_status="pending",
             queued_at_ms=0,  # นานมากแล้วตั้งแต่ epoch -> เกิน timeout แน่นอน
         )),
     )
@@ -197,7 +197,7 @@ def test_ocr_preview_error_status(monkeypatch):
         "get_ocr_result_row",
         AsyncMock(return_value=sheets.OcrResultRow(
             row_index=1, status="error", nationality="", passport_no="", sex="",
-            regex_name="", pe_name="", remark="อ่านไม่ออก", import_status="pending", queued_at_ms=None,
+            pe_name="", typhoon_name="", remark="อ่านไม่ออก", import_status="pending", queued_at_ms=None,
         )),
     )
     res = client.get("/sheets/sheet1/seq/1/ocr-preview")
@@ -212,14 +212,14 @@ def test_ocr_preview_done_status(monkeypatch):
         "get_ocr_result_row",
         AsyncMock(return_value=sheets.OcrResultRow(
             row_index=1, status="done", nationality="THA", passport_no="AA1", sex="M",
-            regex_name="A B", pe_name="A B", remark="", import_status="pending", queued_at_ms=None,
+            pe_name="A B", typhoon_name="A B", remark="", import_status="pending", queued_at_ms=None,
         )),
     )
     res = client.get("/sheets/sheet1/seq/1/ocr-preview")
     body = res.json()
     assert body["status"] == "done"
     assert body["nationality"] == "THA"
-    assert body["regex_name"] == "A B"
+    assert body["typhoon_name"] == "A B"
 
 
 def test_upload_photo_rejects_unknown_photo_type():

@@ -290,7 +290,7 @@ async def update_flight_no(sheet_id: str, seq_list: list[str], flight_no: str) -
 # ==========================================
 OCR_RESULTS_HEADERS = [
     "SEQ", "Timestamp", "Status", "Nationality", "PassportNo", "Sex",
-    "RegexName", "PassportEyeName", "Remark", "ImportStatus", "QueuedAtMs",
+    "PassportEyeName", "TyphoonName", "Remark", "ImportStatus", "QueuedAtMs",
 ]
 OCR_TIMEOUT_MS = 60 * 1000
 
@@ -302,8 +302,8 @@ class OcrResultRow:
     nationality: str
     passport_no: str
     sex: str
-    regex_name: str
     pe_name: str
+    typhoon_name: str
     remark: str
     import_status: str
     queued_at_ms: int | None
@@ -341,8 +341,8 @@ async def get_ocr_result_row(sheet_id: str, seq: str) -> OcrResultRow | None:
         nationality=str(cells[3] or ""),
         passport_no=str(cells[4] or ""),
         sex=str(cells[5] or ""),
-        regex_name=str(cells[6] or ""),
-        pe_name=str(cells[7] or ""),
+        pe_name=str(cells[6] or ""),
+        typhoon_name=str(cells[7] or ""),
         remark=str(cells[8] or ""),
         import_status=str(cells[9] or ""),
         queued_at_ms=int(queued_raw) if queued_raw.isdigit() else None,
@@ -395,8 +395,8 @@ async def write_ocr_result(
     nationality: str = "",
     passport_no: str = "",
     sex: str = "",
-    regex_name: str = "",
     pe_name: str = "",
+    typhoon_name: str = "",
     remark: str = "",
     error: str = "",
 ) -> None:
@@ -404,7 +404,7 @@ async def write_ocr_result(
     if success:
         row_values = [
             seq, timestamp, "done", nationality, passport_no, sex,
-            regex_name, pe_name, remark, "pending", "",
+            pe_name, typhoon_name, remark, "pending", "",
         ]
     else:
         row_values = [
