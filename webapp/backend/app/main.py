@@ -9,7 +9,6 @@ app = FastAPI(title="Passport Check-in Backend")
 def healthz():
     return {
         "status": "ok",
-        "sheet_configured": bool(settings.sheet_id),
-        "drive_configured": bool(settings.drive_folder_id),
+        "google_service_account_configured": bool(settings.google_service_account_json),
         "typhoon_configured": bool(settings.typhoon_api_key),
     }
