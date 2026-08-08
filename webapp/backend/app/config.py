@@ -1,6 +1,12 @@
 import os
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
+
+# โหลดค่าจาก .env เข้า os.environ สำหรับ dev บนเครื่องตัวเอง (ไม่มีไฟล์ก็ไม่ error เฉยๆ) — ค่า env
+# จริงที่ตั้งไว้แล้ว (เช่นตอน deploy บน Cloud Run) มาก่อนเสมอ เพราะ load_dotenv() ไม่ทับของเดิม
+load_dotenv()
+
 
 @dataclass(frozen=True)
 class Settings:

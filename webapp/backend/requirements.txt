@@ -7,6 +7,7 @@ requests==2.32.3
 python-multipart==0.0.17
 websockets==13.1
 httpx==0.28.1
+python-dotenv==1.2.2
 passporteye==2.2.2
 Pillow==10.2.0
 openai==1.58.1
