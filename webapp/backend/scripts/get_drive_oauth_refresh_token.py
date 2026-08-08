@@ -1,0 +1,49 @@
+"""
+รันสคริปต์นี้ครั้งเดียวบนเครื่องของคุณเอง (ไม่ใช่ใน container/sandbox — ต้องมีเบราว์เซอร์จริงและ
+ล็อกอินด้วยบัญชี Google ที่เป็นเจ้าของโฟลเดอร์ `interview` จริง เช่น hktimmarr4@gmail.com) เพื่อขอ
+refresh token ให้ backend อัปโหลดรูปเข้า Drive แทน service account (ซึ่งไม่มีโควตาพื้นที่ของตัวเอง —
+ดู webapp/README.md หัวข้อ Phase 5 ว่าทำไมต้องมีขั้นตอนนี้)
+
+ก่อนรัน:
+1. ติดตั้ง dependency เพิ่ม (ตัวเดียว ไม่ได้อยู่ใน requirements.txt เพราะใช้แค่สคริปต์นี้สคริปต์เดียว):
+     pip install google-auth-oauthlib
+2. สร้าง OAuth Client ID ชนิด "Desktop app" ที่ Google Cloud Console > APIs & Services > Credentials >
+   Create Credentials > OAuth client ID > Application type: Desktop app (คนละตัวกับ Client ID ที่ใช้ทำ
+   Google Sign-In ใน frontend ซึ่งเป็นชนิด Web application — Desktop app เท่านั้นที่ขอ refresh token
+   แบบไม่มี fixed redirect URI ได้สะดวก) ดาวน์โหลดไฟล์ JSON ที่ได้
+
+รัน:
+     python scripts/get_drive_oauth_refresh_token.py /path/to/downloaded_client_secret.json
+
+จะเปิดเบราว์เซอร์ให้ล็อกอิน + กด Allow ด้วยบัญชีเจ้าของโฟลเดอร์ `interview` แล้วพิมพ์ค่าที่ได้ 3 ตัว
+(GOOGLE_DRIVE_OAUTH_CLIENT_ID, GOOGLE_DRIVE_OAUTH_CLIENT_SECRET, GOOGLE_DRIVE_REFRESH_TOKEN) ลงใน .env
+"""
+import json
+import sys
+
+from google_auth_oauthlib.flow import InstalledAppFlow
+
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        print(f"Usage: {sys.argv[0]} /path/to/downloaded_client_secret.json", file=sys.stderr)
+        sys.exit(1)
+
+    client_secret_path = sys.argv[1]
+    flow = InstalledAppFlow.from_client_secrets_file(client_secret_path, scopes=SCOPES)
+    creds = flow.run_local_server(port=0)
+
+    with open(client_secret_path) as f:
+        client_info = json.load(f)
+    client_id = client_info.get("installed", client_info.get("web", {})).get("client_id", "")
+
+    print("\nสำเร็จ! ใส่ค่าต่อไปนี้ลงใน webapp/backend/.env:\n")
+    print(f"GOOGLE_DRIVE_OAUTH_CLIENT_ID={client_id}")
+    print(f"GOOGLE_DRIVE_OAUTH_CLIENT_SECRET={creds.client_secret}")
+    print(f"GOOGLE_DRIVE_REFRESH_TOKEN={creds.refresh_token}")
+
+
+if __name__ == "__main__":
+    main()
