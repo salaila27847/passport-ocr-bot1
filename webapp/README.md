@@ -13,7 +13,7 @@ webapp/backend (FastAPI, Python) ── Google Sheets API ──► Google Sheet
         └─ Typhoon OCR API (opentyphoon.ai) — เสริม OCR (passport bio page cross-check + Return Ticket/Accommodation field extraction)
 ```
 
-Google Sheets/Drive ยังเป็นฐานข้อมูลหลักเหมือนเดิม (ไม่ย้ายไป Postgres) เพราะฝ่ายอื่นยังต้องดูรายงานจาก Sheet และไม่มีงบสำหรับ hosting แบบเสียเงิน แผน deploy backend คือ Google Cloud Run free tier (cold start เร็วกว่า Render free tier มาก และ auth กับ Sheets/Drive อยู่ระบบนิเวศเดียวกัน)
+Google Sheets/Drive ยังเป็นฐานข้อมูลหลักเหมือนเดิม (ไม่ย้ายไป Postgres) เพราะฝ่ายอื่นยังต้องดูรายงานจาก Sheet และไม่มีงบสำหรับ hosting แบบเสียเงิน deploy backend ขึ้น Render free tier + frontend ขึ้น Vercel (แผนเดิมคือ Google Cloud Run แต่ติดปัญหา billing account verification ของ Google ตอนสมัคร ดูหัวข้อ Deploy ด้านล่าง)
 
 ## โครงสร้างโฟลเดอร์
 
@@ -153,53 +153,36 @@ cd webapp/backend
    - **ก่อนใช้งานจริง**: กลับไปที่ OAuth consent screen แล้วกด **Publish App** เปลี่ยนสถานะจาก "Testing" เป็น "In production" — ถ้าปล่อยเป็น Testing ไว้ refresh token ที่ได้จะหมดอายุใน 7 วัน (กด Publish ไม่ต้องผ่าน verify ของ Google ก็ได้ แค่ยังมีหน้าเตือน unverified ตอน login เหมือนเดิม ไม่กระทบอะไรเพราะสคริปต์นี้รันครั้งเดียว)
 9. คัดลอก `backend/.env.example` เป็น `.env` (ไฟล์ต้องชื่อ `.env` เป๊ะๆ — แก้ `.env.example` ตรงๆ จะไม่ถูกอ่าน) แล้วกรอกค่า: `GOOGLE_SERVICE_ACCOUNT_JSON` (เนื้อหาไฟล์ JSON จากข้อ 3, เป็น JSON string ทั้งก้อน), `MAIN_FOLDER_NAME` (ปกติคือ `interview`), `TYPHOON_API_KEY`, `GOOGLE_OAUTH_CLIENT_ID` (จากข้อ 6), `ALLOWED_STAFF_DOMAIN`/`ALLOWED_STAFF_EMAILS` (จากข้อ 7), `GOOGLE_DRIVE_OAUTH_CLIENT_ID`/`GOOGLE_DRIVE_OAUTH_CLIENT_SECRET`/`GOOGLE_DRIVE_REFRESH_TOKEN` (จากข้อ 8) — `app/config.py` โหลด `.env` เข้า `os.environ` อัตโนมัติผ่าน `python-dotenv` ตอน import (ไม่ทับ env var จริงที่ตั้งไว้แล้ว เช่นตอน deploy) ไม่ต้อง `source`/`export` เอง
 
-## Deploy ขึ้น Google Cloud Run (Phase 6)
+## Deploy ขึ้น Render (backend) + Vercel (frontend) (Phase 6)
 
-ทำบนเครื่องที่มี `gcloud` login เข้าโปรเจกต์จริงแล้วเท่านั้น (sandbox/CI ทำแทนไม่ได้ ไม่มีสิทธิ์เข้าถึง GCP project ของคุณ) ก่อน deploy ครั้งแรกให้เปิดใช้ API ที่จำเป็นก่อน:
+แผนเดิมคือ Google Cloud Run แต่สร้าง billing account ใหม่ติด risk-check ของ Google (`OR_BACR2_44`) เลยเปลี่ยนมาใช้ Render (backend, รองรับ `Dockerfile` ที่มีอยู่แล้วตรงๆ) + Vercel (frontend, static site) แทน — ทั้งคู่ signup ฟรีด้วย GitHub login ไม่ต้องผูกบัตร
 
-```bash
-gcloud config set project YOUR_PROJECT_ID
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com
-```
+### 1. Deploy backend ขึ้น Render
 
-### 1. สร้าง secret ใน Secret Manager (ครั้งแรกครั้งเดียว)
+[render.com](https://render.com) → Sign up with GitHub → **New +** → **Web Service** → connect repo `salaila27847/passport-ocr-bot1` → ตั้งค่า:
+- **Branch**: `main`
+- **Root Directory**: `webapp/backend`
+- **Runtime**: Docker (auto-detect จาก `Dockerfile`)
+- **Environment Variables**: `MAIN_FOLDER_NAME`, `TYPHOON_API_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, `ALLOWED_STAFF_DOMAIN`/`ALLOWED_STAFF_EMAILS`, `GOOGLE_SERVICE_ACCOUNT_JSON` (วาง JSON ทั้งก้อนได้เลย ช่องเป็น textarea ไม่ต้องบีบบรรทัดเดียว), `GOOGLE_DRIVE_OAUTH_CLIENT_ID`/`_CLIENT_SECRET`/`GOOGLE_DRIVE_REFRESH_TOKEN` (ทุกค่าดูจาก `.env`)
 
-ค่า 3 ตัวนี้เป็นความลับ ห้ามใส่เป็น `--set-env-vars` ตรงๆ (จะโชว์เป็น plain text ใน Cloud Run console/audit log) — ดึงจาก `.env` แล้วส่งเข้า Secret Manager ตรงๆ กัน quoting พังจาก `private_key` ที่มี newline:
+Create Web Service แล้วรอ build (~3-5 นาทีครั้งแรก เพราะต้องลง `tesseract-ocr`) ได้ URL แบบ `https://xxxxx.onrender.com` (Render อาจเติมเลขต่อท้ายชื่อถ้าชื่อซ้ำกับที่อื่นในระบบ เช็ค URL จริงจากหน้า dashboard) — ทดสอบด้วย `curl https://<URL>/healthz` ควรได้ `{"status":"ok",...}`
 
-```bash
-cd webapp/backend
-python3 -c "from dotenv import dotenv_values; print(dotenv_values('.env')['GOOGLE_SERVICE_ACCOUNT_JSON'], end='')" \
-  | gcloud secrets create google-service-account --data-file=-
-python3 -c "from dotenv import dotenv_values; print(dotenv_values('.env')['GOOGLE_DRIVE_OAUTH_CLIENT_SECRET'], end='')" \
-  | gcloud secrets create drive-oauth-client-secret --data-file=-
-python3 -c "from dotenv import dotenv_values; print(dotenv_values('.env')['GOOGLE_DRIVE_REFRESH_TOKEN'], end='')" \
-  | gcloud secrets create drive-oauth-refresh-token --data-file=-
-```
+### 2. ใส่ URL backend ให้ frontend รู้จัก
 
-(deploy ครั้งต่อๆ ไปถ้าค่าเปลี่ยน ใช้ `gcloud secrets versions add <name> --data-file=-` แทน `create`)
+`webapp/frontend/index.html` มีบรรทัด `<script>window.BACKEND_URL = "...";</script>` ก่อนโหลด `app.js` — แก้ให้ชี้ไป URL จริงจากข้อ 1 แล้ว commit เข้า `main`
 
-### 2. Deploy backend
+### 3. Deploy frontend ขึ้น Vercel
 
-```bash
-gcloud run deploy passport-checkin-backend \
-  --source webapp/backend \
-  --region asia-southeast1 \
-  --allow-unauthenticated \
-  --set-env-vars MAIN_FOLDER_NAME=interview,TYPHOON_API_KEY=...,GOOGLE_OAUTH_CLIENT_ID=...,ALLOWED_STAFF_DOMAIN=...,GOOGLE_DRIVE_OAUTH_CLIENT_ID=... \
-  --set-secrets GOOGLE_SERVICE_ACCOUNT_JSON=google-service-account:latest,GOOGLE_DRIVE_OAUTH_CLIENT_SECRET=drive-oauth-client-secret:latest,GOOGLE_DRIVE_REFRESH_TOKEN=drive-oauth-refresh-token:latest
-```
+[vercel.com](https://vercel.com) → Continue with GitHub → **Add New** → **Project** → import repo เดียวกัน → ตั้งค่า:
+- **Framework Preset**: Other
+- **Root Directory**: `webapp/frontend`
+- **Build Command**: ว่างไว้ (ไม่มี build step เป็น static file ล้วน)
 
-`--allow-unauthenticated` แปลว่า URL เข้าถึงได้จากอินเทอร์เน็ตทั่วไป (ปกติสำหรับ Cloud Run ที่ auth ทำเองในแอป) — ระบบมี auth ของตัวเองอยู่แล้วผ่าน Google Sign-In + `ALLOWED_STAFF_DOMAIN`/`ALLOWED_STAFF_EMAILS` (fail closed ถ้าไม่ตั้งค่า) เก็บ URL ที่ได้จาก output (`https://passport-checkin-backend-xxxxx.run.app`) ไว้ใช้ขั้นต่อไป
+Deploy ได้ URL แบบ `https://xxxxx.vercel.app` (ใช้ production URL ไม่ใช่ preview URL ที่เปลี่ยนทุก commit)
 
-ทดสอบว่า deploy ผ่านจริง: `curl https://<URL ที่ได้>/health` ควรได้ 200
+### 4. เพิ่ม origin ของ frontend เข้า OAuth Client
 
-### 3. Deploy frontend
-
-frontend เป็น static files ล้วน deploy แยกจาก backend ได้เลย (เช่น Render Static Site, Cloudflare Pages, หรือแม้แต่ Cloud Storage bucket — ฟรีทุกตัว) ต้องแก้ `BACKEND_URL` ใน `frontend/app.js` (หรือประกาศ `window.BACKEND_URL` ใน `index.html` ก่อนโหลด `app.js`) ให้ชี้ไป URL ของ backend จาก ข้อ 2
-
-### 4. เพิ่ม origin ของ frontend ที่ deploy จริงเข้า OAuth Client (ข้อ 6 ในหัวข้อ "สิ่งที่ต้องตั้งค่าเอง")
-
-กลับไปที่ Google Cloud Console > APIs & Services > Credentials > OAuth client ID ตัวที่เป็น Web application (Google Sign-In) แล้วเพิ่ม URL จริงของ frontend เข้า "Authorized JavaScript origins" — ไม่งั้น Google Sign-In จะ error ตอนล็อกอินจาก URL จริง (ผ่านเฉพาะตอน dev ที่ `localhost`)
+Google Cloud Console > APIs & Services > Credentials > OAuth client ID ตัว Web application (Google Sign-In) > เพิ่ม URL จาก Vercel เข้า **Authorized JavaScript origins** — ไม่งั้น Google Sign-In error ตอนล็อกอินจาก URL จริง (ผ่านแค่ตอน dev ที่ `localhost`)
 
 ### 5. ทดสอบ end-to-end บน URL จริงก่อนปิดระบบเก่า
 
